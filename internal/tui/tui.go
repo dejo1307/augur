@@ -546,8 +546,8 @@ func (m Model) viewList() string {
 		if i == m.cursor {
 			label = stySelected.Render(label)
 		}
-		b.WriteString(fmt.Sprintf("%s%s %s %s\n",
-			cursor, box, severityStyle(r.f.Severity).Render(severityMark(r.f.Severity)), label))
+		fmt.Fprintf(&b, "%s%s %s %s\n",
+			cursor, box, severityStyle(r.f.Severity).Render(severityMark(r.f.Severity)), label)
 	}
 	if len(m.rows) == 0 {
 		b.WriteString("\n  " + styOK.Render("Nothing hidden found in this file."))
@@ -723,7 +723,7 @@ func hexPreview(b []byte, max int) string {
 		if i > 0 && i%16 == 0 {
 			sb.WriteString("\n")
 		}
-		sb.WriteString(fmt.Sprintf("%02x ", x))
+		fmt.Fprintf(&sb, "%02x ", x)
 	}
 	return sb.String()
 }

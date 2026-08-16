@@ -346,17 +346,3 @@ func kindCounts(s finding.Set) map[finding.Kind]int {
 	}
 	return out
 }
-
-func unremovable(all, removable finding.Set) finding.Set {
-	drop := map[finding.ID]bool{}
-	for _, f := range removable {
-		drop[f.ID] = true
-	}
-	var out finding.Set
-	for _, f := range all {
-		if !drop[f.ID] {
-			out = append(out, f)
-		}
-	}
-	return out
-}

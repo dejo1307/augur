@@ -27,13 +27,30 @@ func JSON(w io.Writer, path string, format string, set finding.Set) error {
 	return enc.Encode(doc{Path: path, Format: format, Count: len(set), Findings: set})
 }
 
-// Text writes a human-readable report for a terminal without a viewer.
-func Text(w io.Writer, path string, format string, set finding.Set) {
-	if len(set) == 0 {
-		fmt.Fprintf(w, "%s (%s): nothing hidden found\n", path, format)
+// errWriter latches the first write error so a long report can be written as
+// straight-line code and still report a broken pipe. Checking every Fprintf by
+// hand would bury the shape of the report in error handling for a failure mode
+// that is always the same one.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) printf(format string, args ...any) {
+	if e.err != nil {
 		return
 	}
-	fmt.Fprintf(w, "%s (%s): %d finding(s)\n", path, format, len(set))
+	_, e.err = fmt.Fprintf(e.w, format, args...)
+}
+
+// Text writes a human-readable report for a terminal without a viewer.
+func Text(w io.Writer, path string, format string, set finding.Set) error {
+	e := &errWriter{w: w}
+	if len(set) == 0 {
+		e.printf("%s (%s): nothing hidden found\n", path, format)
+		return e.err
+	}
+	e.printf("%s (%s): %d finding(s)\n", path, format, len(set))
 
 	byCat := set.ByCategory()
 	for _, cat := range finding.Categories() {
@@ -41,21 +58,22 @@ func Text(w io.Writer, path string, format string, set finding.Set) {
 		if len(group) == 0 {
 			continue
 		}
-		fmt.Fprintf(w, "\n%s\n", strings.ToUpper(string(cat)))
+		e.printf("\n%s\n", strings.ToUpper(string(cat)))
 		for _, f := range group {
 			mark := " "
 			if !f.Removable {
 				mark = "*"
 			}
-			fmt.Fprintf(w, " %s [%s] offset %d — %s\n", mark, f.Severity, f.Span.Offset, f.Label)
+			e.printf(" %s [%s] offset %d — %s\n", mark, f.Severity, f.Span.Offset, f.Label)
 			if d := detailLine(f); d != "" {
-				fmt.Fprintf(w, "       %s\n", d)
+				e.printf("       %s\n", d)
 			}
 		}
 	}
 	if len(set.Removable()) < len(set) {
-		fmt.Fprintf(w, "\n* not removable — reported and left in place\n")
+		e.printf("\n* not removable — reported and left in place\n")
 	}
+	return e.err
 }
 
 // detailLine renders a finding's evidence as one line. The decoded message gets

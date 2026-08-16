@@ -1,0 +1,136 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  # A tag that fails its own tests must not produce downloads. This gates the
+  # build matrix rather than running beside it.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  # augur has no cgo dependencies — the scanner, decoders, EXIF reader and
+  # container walkers are all standard library, and the viewer's deps are pure
+  # Go. So every platform cross-compiles from one Linux runner, and the matrix
+  # is over GOOS/GOARCH rather than over runner images.
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Compute version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY="augur-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          EXT=""
+          [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          # -trimpath keeps the build machine's directory layout out of the
+          # binary, so the same tag built anywhere produces the same bytes.
+          go build -trimpath \
+            -ldflags "-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -o "${BINARY}${EXT}" ./cmd/augur
+
+      - name: Package
+        run: |
+          BINARY="augur-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}"
+          EXT=""
+          [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          # LICENSE and NOTICE ride along with the binary. Apache-2.0 §4 requires
+          # recipients of a copy to get the license with it, and the tarball IS
+          # the copy anyone installing via install.sh receives — leaving it in the
+          # source tree only puts it somewhere they never look.
+          #
+          # install.sh extracts into a temp directory and installs the binary BY
+          # NAME, so the extra members are ignored and nothing else lands on PATH.
+          tar czf "${BINARY}.tar.gz" "${BINARY}${EXT}" LICENSE NOTICE
+          sha256sum "${BINARY}.tar.gz" > "${BINARY}.sha256"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v3
+        with:
+          # Stays a draft until the publish job confirms every platform made it.
+          draft: true
+          files: |
+            augur-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+            augur-${{ steps.version.outputs.version }}-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+
+  # Publishes the draft only once every platform asset is present. If a build leg
+  # fails — or is never scheduled — this job is skipped and the release stays a
+  # visible draft rather than silently shipping a partial set of binaries that
+  # install.sh would then fail to find.
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify every platform asset is present
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The contract for a complete release. Keep in sync with the build matrix.
+          PLATFORMS="linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64"
+          VERSION="${{ steps.version.outputs.version }}"
+
+          ASSETS="$(gh release view "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+
+          missing=0
+          for platform in $PLATFORMS; do
+            for ext in tar.gz sha256; do
+              name="augur-${VERSION}-${platform}.${ext}"
+              if ! grep -qxF "$name" <<<"$ASSETS"; then
+                echo "::error::missing release asset: $name"
+                missing=1
+              fi
+            done
+          done
+          [ "$missing" -eq 0 ]
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --draft=false

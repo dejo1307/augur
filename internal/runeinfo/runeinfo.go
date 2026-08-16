@@ -200,7 +200,7 @@ func Name(r rune) string {
 	case TagChar:
 		// The block mirrors ASCII exactly, which is the whole reason it is used.
 		if plain := r - 0xE0000; plain >= 0x20 && plain <= 0x7E {
-			return fmt.Sprintf("TAG %q", rune(plain))
+			return fmt.Sprintf("TAG %q", plain)
 		}
 		return "TAG CHARACTER"
 	case VariationSelector:
@@ -232,7 +232,7 @@ func Display(r rune) string {
 	switch c := Classify(r); c {
 	case TagChar:
 		if plain := r - 0xE0000; plain >= 0x20 && plain <= 0x7E {
-			return fmt.Sprintf("⟨TAG:%c⟩", rune(plain))
+			return fmt.Sprintf("⟨TAG:%c⟩", plain)
 		}
 		return fmt.Sprintf("⟨TAG:%04X⟩", r)
 	case VariationSelector:
