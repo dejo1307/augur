@@ -61,6 +61,34 @@ type Result struct {
 // Clean reports whether the scan found nothing at all.
 func (r Result) Clean() bool { return len(r.Findings) == 0 }
 
+// Examined reports whether anything actually looked inside this file.
+//
+// A format no handler claims exposes no regions, so every text detector iterates
+// an empty list and the scan comes back with nothing found. For one file that is
+// legible — the user can see the format in the report and draw the obvious
+// conclusion. Across a repository it is the dangerous case: four hundred results
+// that say "nothing hidden found" and forty of them mean "nothing looked". A
+// directory scan reports the two separately, and this is the fact it does it by.
+func (r Result) Examined() bool {
+	if r.Source == nil {
+		return false
+	}
+	if len(r.Source.Regions) > 0 {
+		return true
+	}
+	// No text was exposed, which does not settle it: a container handler may have
+	// parsed the file's structure and found an image whose metadata is genuinely
+	// empty, which is a different answer from an unread one. The formats listed
+	// are exactly those some handler claims — regions() for text, a detector's
+	// Applies for the rest — and TestExaminedMatchesTheHandlers holds this list to
+	// the registry so a new handler cannot leave it behind.
+	switch r.Source.Format {
+	case detect.Text, detect.JPEG, detect.PNG, detect.WebP, detect.PDF, detect.Office:
+		return true
+	}
+	return false
+}
+
 // Scan reads a file's bytes and returns everything the detectors found.
 func Scan(path string, data []byte) Result {
 	src := &detect.Source{

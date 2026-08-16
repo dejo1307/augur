@@ -24,6 +24,7 @@ usage:
   augur                    open the interactive viewer
   augur FILE               open FILE in the interactive viewer
   augur scan FILE [--json] report findings and exit
+  augur scan DIR           scan a whole tree: git's file list, coverage reported
   augur clean FILE -o OUT  write a cleaned copy without prompting
   augur agents             scan the instruction files your coding agents read
   augur upgrade [--check]  replace this binary with the newest release

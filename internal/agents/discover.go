@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/dejo1307/augur/internal/walk"
 )
 
 // Found is one instruction file located on disk.
@@ -113,7 +115,7 @@ func installed(home string, a Agent) bool {
 func glob(root, pattern string) []string {
 	segments := strings.Split(pattern, "/")
 	var out []string
-	walk(root, segments, &out)
+	expand(root, segments, &out)
 
 	sort.Strings(out)
 	if len(out) > maxMatches {
@@ -122,7 +124,7 @@ func glob(root, pattern string) []string {
 	return out
 }
 
-func walk(dir string, segments []string, out *[]string) {
+func expand(dir string, segments []string, out *[]string) {
 	if len(*out) >= maxMatches {
 		return
 	}
@@ -134,10 +136,10 @@ func walk(dir string, segments []string, out *[]string) {
 
 	if head == "**" {
 		// Zero segments: try the remainder right here.
-		walk(dir, rest, out)
+		expand(dir, rest, out)
 		// One or more: recurse into every subdirectory, keeping `**` in play.
 		for _, e := range readDirs(dir) {
-			walk(filepath.Join(dir, e), segments, out)
+			expand(filepath.Join(dir, e), segments, out)
 		}
 		return
 	}
@@ -153,7 +155,7 @@ func walk(dir string, segments []string, out *[]string) {
 			}
 			return
 		}
-		walk(next, rest, out)
+		expand(next, rest, out)
 		return
 	}
 
@@ -174,27 +176,19 @@ func walk(dir string, segments []string, out *[]string) {
 			continue
 		}
 		if e.IsDir() {
-			walk(next, rest, out)
+			expand(next, rest, out)
 		}
 	}
 }
 
-// skipDirs are never descended into by a `**` walk.
+// readDirs lists the subdirectories a `**` walk may descend into.
 //
-// This matters most for the project-scoped `**/CLAUDE.md` patterns: a nested
-// CLAUDE.md is loaded when work happens in its directory, so the pattern has to
-// be recursive — but without this list it would walk node_modules and .git on
-// every run, which is both slow and a good way to report a vendored dependency's
-// instruction file as if it were yours.
-var skipDirs = map[string]bool{
-	".git": true, "node_modules": true, "vendor": true,
-	"dist": true, "build": true, "target": true, "out": true,
-	".venv": true, "venv": true, "site-packages": true, "__pycache__": true,
-	".next": true, ".nuxt": true, ".svelte-kit": true, ".turbo": true,
-	".gradle": true, ".terraform": true, "Pods": true, "DerivedData": true,
-	".cache": true, ".enola": true,
-}
-
+// The exclusions live in walk.SkipDirs, shared with the directory scanner rather
+// than kept here twice. This matters most for the project-scoped `**/CLAUDE.md`
+// patterns: a nested CLAUDE.md is loaded when work happens in its directory, so
+// the pattern has to be recursive — but without that list it would walk
+// node_modules and .git on every run, which is both slow and a good way to
+// report a vendored dependency's instruction file as if it were yours.
 func readDirs(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -202,7 +196,7 @@ func readDirs(dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		if !e.IsDir() || skipDirs[e.Name()] {
+		if !e.IsDir() || walk.SkipDir(e.Name()) {
 			continue
 		}
 		// Do not follow symlinks: an agent directory containing a link to / would

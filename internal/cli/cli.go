@@ -12,12 +12,16 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/dejo1307/augur/internal/agents"
 	"github.com/dejo1307/augur/internal/report"
 	"github.com/dejo1307/augur/internal/session"
 	"github.com/dejo1307/augur/internal/upgrade"
+	"github.com/dejo1307/augur/internal/walk"
 	"github.com/dejo1307/augur/pkg/finding"
 )
 
@@ -28,27 +32,57 @@ const (
 	ExitError    = 2 // could not read or parse the file
 )
 
-// Scan implements `augur scan FILE [--json] [--min-severity=...]`.
+// Scan implements `augur scan PATH... [--json] [--min-severity=...]`.
+//
+// One file is one question and the report answers it in full. A directory is a
+// different question — what is in this repository, and what did you not look at —
+// so it gets a different report rather than the file report repeated a thousand
+// times. Both go through the same engine on the same terms; only the path source
+// and the rendering differ.
 func Scan(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "write findings as JSON")
-	minSev := fs.String("min-severity", "notice", "notice, concern or alarm")
+	// Empty rather than "notice": the default depends on the target, and the two
+	// cases are resolved below. A file the user named deserves everything found;
+	// a repository needs a floor or the one alarm drowns in trailing whitespace.
+	minSev := fs.String("min-severity", "", "notice, concern or alarm (default: notice for a file, concern for a directory)")
+	maxSize := fs.Int64("max-size", walk.DefaultMaxSize, "when walking a directory, skip files larger than this many bytes")
+	noGit := fs.Bool("no-git", false, "walk the filesystem instead of asking git which files the repository has")
+	maxFiles := fs.Int("max-files", 20, "how many flagged files the text report details (0 for all)")
 	if err := fs.Parse(args); err != nil {
 		return ExitError
 	}
-	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: augur scan FILE [--json] [--min-severity=notice|concern|alarm]")
+	if fs.NArg() == 0 {
+		fmt.Fprintln(stderr, "usage: augur scan PATH... [--json] [--min-severity=notice|concern|alarm]")
 		return ExitError
 	}
 
-	threshold, err := parseSeverity(*minSev)
+	if fs.NArg() == 1 && isRegularFile(fs.Arg(0)) {
+		return scanFile(fs.Arg(0), *minSev, *asJSON, stdout, stderr)
+	}
+	return scanTree(fs.Args(), treeOptions{
+		minSev:   *minSev,
+		asJSON:   *asJSON,
+		maxSize:  *maxSize,
+		noGit:    *noGit,
+		maxFiles: *maxFiles,
+	}, stdout, stderr)
+}
+
+// scanFile is the single-file report, unchanged: one file, every finding, and
+// the JSON shape other programs already parse.
+func scanFile(path, minSev string, asJSON bool, stdout, stderr io.Writer) int {
+	if minSev == "" {
+		minSev = "notice"
+	}
+	threshold, err := parseSeverity(minSev)
 	if err != nil {
 		fmt.Fprintln(stderr, "augur:", err)
 		return ExitError
 	}
 
-	s, err := session.Open(fs.Arg(0))
+	s, err := session.Open(path)
 	if err != nil {
 		fmt.Fprintln(stderr, "augur:", err)
 		return ExitError
@@ -65,7 +99,7 @@ func Scan(args []string, stdout, stderr io.Writer) int {
 	}
 
 	set := atLeast(s.Findings(), threshold)
-	if *asJSON {
+	if asJSON {
 		if err := report.JSON(stdout, s.Path, string(s.Result.Source.Format), set); err != nil {
 			fmt.Fprintln(stderr, "augur:", err)
 			return ExitError
@@ -79,6 +113,167 @@ func Scan(args []string, stdout, stderr io.Writer) int {
 		return ExitFindings
 	}
 	return ExitClean
+}
+
+type treeOptions struct {
+	minSev   string
+	asJSON   bool
+	maxSize  int64
+	noGit    bool
+	maxFiles int
+}
+
+// scanTree scans every file under the given roots.
+func scanTree(roots []string, opt treeOptions, stdout, stderr io.Writer) int {
+	// A repository floor of `concern`, for the reason `agents` has one: notice-level
+	// trailing whitespace and byte-order marks are a linter's business, and across a
+	// few thousand files they bury the single decoded payload that is this tool's
+	// entire reason to exist. The floor is stated in the report and lifted by
+	// --min-severity=notice.
+	if opt.minSev == "" {
+		opt.minSev = "concern"
+	}
+	threshold, err := parseSeverity(opt.minSev)
+	if err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
+	}
+
+	ctx := context.Background()
+	var paths []string
+	var skipped []report.TreeSkip
+	sources := map[walk.Source]bool{}
+	seen := map[string]bool{}
+
+	for _, root := range roots {
+		res, err := walk.Walk(ctx, root, walk.Options{MaxSize: opt.maxSize, NoGit: opt.noGit})
+		if err != nil {
+			fmt.Fprintln(stderr, "augur:", err)
+			return ExitError
+		}
+		sources[res.Source] = true
+		for _, p := range res.Files {
+			if seen[p] {
+				continue // overlapping arguments name the same file once
+			}
+			seen[p] = true
+			paths = append(paths, p)
+		}
+		for _, s := range res.Skipped {
+			skipped = append(skipped, report.TreeSkip{Path: s.Path, Reason: s.Reason})
+		}
+	}
+
+	result := report.TreeResult{
+		Root:      strings.Join(roots, ", "),
+		Source:    sourceLabel(sources),
+		Threshold: threshold,
+		MaxSize:   opt.maxSize,
+		Files:     scanAll(paths, threshold),
+		Skipped:   skipped,
+		MaxFiles:  opt.maxFiles,
+	}
+
+	render := report.Tree
+	if opt.asJSON {
+		render = report.TreeJSON
+	}
+	if err := render(stdout, result); err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
+	}
+
+	// Same contract as a single file: a scan that could not complete is an error,
+	// never a clean bill of health.
+	failed, found := false, false
+	for _, f := range result.Files {
+		if f.Err != nil {
+			failed = true
+		}
+		if len(f.Findings) > 0 {
+			found = true
+		}
+	}
+	switch {
+	case failed:
+		return ExitError
+	case found:
+		return ExitFindings
+	}
+	return ExitClean
+}
+
+// scanAll scans paths concurrently and returns the results in path order.
+//
+// A scan is pure over a file's bytes — it reads no shared state and writes none —
+// so the only thing concurrency costs here is determinism, and indexing the
+// results by position buys that back. Memory is bounded by the worker count times
+// the walk's size limit rather than by the size of the repository.
+func scanAll(paths []string, threshold finding.Severity) []report.TreeFile {
+	out := make([]report.TreeFile, len(paths))
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(paths) {
+		workers = len(paths)
+	}
+	if workers < 1 {
+		return out
+	}
+
+	queue := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range queue {
+				out[i] = scanOne(paths[i], threshold)
+			}
+		}()
+	}
+	for i := range paths {
+		queue <- i
+	}
+	close(queue)
+	wg.Wait()
+	return out
+}
+
+func scanOne(path string, threshold finding.Severity) report.TreeFile {
+	entry := report.TreeFile{Path: path}
+	s, err := session.Open(path)
+	if err != nil {
+		entry.Err = err
+		return entry
+	}
+	entry.Format = string(s.Result.Source.Format)
+	entry.Examined = s.Result.Examined()
+	if len(s.Result.Errors) > 0 {
+		// The findings that did come back are kept and reported, but the file is
+		// marked incomplete: a detector that failed makes "nothing else here" a
+		// claim nobody checked.
+		entry.Err = errors.Join(s.Result.Errors...)
+	}
+	all := s.Findings()
+	entry.Findings = atLeast(all, threshold)
+	entry.Suppressed = len(all) - len(entry.Findings)
+	return entry
+}
+
+// sourceLabel names how the file list was produced. Several roots can answer
+// differently — one inside a repository, one not — and the report says so rather
+// than picking the more flattering of the two.
+func sourceLabel(sources map[walk.Source]bool) string {
+	if len(sources) == 1 {
+		for s := range sources {
+			return string(s)
+		}
+	}
+	return "mixed"
+}
+
+func isRegularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // Clean implements `augur clean FILE [-o OUT] [--categories=...] [--force]`.

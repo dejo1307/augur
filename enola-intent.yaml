@@ -12,7 +12,12 @@
 #
 #   entrypoint     the binary. Nothing may import into it.
 #   surface        what a human or a pipeline talks to: the TUI, the CLI verbs, the
-#                  report renderers, and the self-upgrader. Two callers, deliberately —
+#                  report renderers, the self-upgrader, and the two things that decide
+#                  which files to look at — agent-instruction discovery and the
+#                  directory walk. Choosing targets is a question about this machine's
+#                  filesystem, so it belongs beside the commands that ask it and not
+#                  underneath them: nothing in the engine or below may know that a
+#                  .gitignore exists. Two callers, deliberately —
 #                  a single caller never proves an engine is separable, and the headless
 #                  mode exists partly to keep the TUI from quietly becoming the
 #                  application. `upgrade` belongs here rather than in core because it is
@@ -55,6 +60,7 @@ layers:
       - "internal/report/**"
       - "internal/upgrade/**"
       - "internal/agents/**"
+      - "internal/walk/**"
   - name: orchestration
     paths:
       - "internal/session/**"
