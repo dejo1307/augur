@@ -14,6 +14,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/dejo1307/augur/internal/agents"
 	"github.com/dejo1307/augur/internal/report"
 	"github.com/dejo1307/augur/internal/session"
 	"github.com/dejo1307/augur/internal/upgrade"
@@ -142,6 +143,102 @@ func Clean(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(v.Remaining) > 0 {
 		return ExitFindings
+	}
+	return ExitClean
+}
+
+// Agents implements `augur agents [--list] [--json] [--project DIR]`.
+//
+// It finds the instruction files the coding agents on this machine read, and
+// scans them with the same detectors everything else uses. Nothing about the
+// scanning is special here — what is special is the target: files a model reads
+// on every session and a human reads approximately never.
+func Agents(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	list := fs.Bool("list", false, "list the instruction files found and exit, without scanning")
+	asJSON := fs.Bool("json", false, "write the result as JSON")
+	project := fs.String("project", ".", "project root to search for repository-local instructions")
+	// Defaults to `concern`, not `notice`. The question this command answers is
+	// "is there a hidden instruction in what my agents read", and a stray
+	// trailing space is not that — on a real machine it fired for 48 files and
+	// buried the answer. The floor is reported in the output, and
+	// --min-severity=notice restores everything.
+	minSev := fs.String("min-severity", "concern", "notice, concern or alarm")
+	if err := fs.Parse(args); err != nil {
+		return ExitError
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: augur agents [--list] [--json] [--project DIR]")
+		return ExitError
+	}
+
+	threshold, err := parseSeverity(*minSev)
+	if err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
+	}
+
+	roots, err := agents.DefaultRoots(*project)
+	if err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
+	}
+	found := agents.Discover(roots)
+
+	if *list {
+		if *asJSON {
+			return jsonOr(stderr, stdout, report.AgentsListJSON(stdout, roots, found))
+		}
+		report.AgentsList(stdout, roots, found)
+		return ExitClean
+	}
+
+	// Scan every discovered file. A file that cannot be read is reported rather
+	// than skipped: "we did not look at this one" must never render as "clean".
+	scanned := make([]report.AgentFile, 0, agents.Count(found))
+	for _, inst := range found {
+		for _, f := range inst.Files {
+			entry := report.AgentFile{Found: f}
+			if s, err := session.Open(f.Path); err != nil {
+				entry.Err = err
+			} else {
+				all := s.Findings()
+				entry.Findings = atLeast(all, threshold)
+				entry.Suppressed = len(all) - len(entry.Findings)
+				if f.Kind == agents.Config && len(entry.Findings) > 0 {
+					entry.Raw = s.Original
+				}
+			}
+			scanned = append(scanned, entry)
+		}
+	}
+
+	if *asJSON {
+		return jsonOr(stderr, stdout, report.AgentsJSON(stdout, roots, found, scanned))
+	}
+	if err := report.Agents(stdout, roots, found, scanned); err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
+	}
+
+	// Exit 1 when anything was found, matching `scan`. A CI job can run this to
+	// fail a pull request that adds a hidden instruction to an agent file.
+	for _, e := range scanned {
+		if e.Err != nil {
+			return ExitError
+		}
+		if len(e.Findings) > 0 {
+			return ExitFindings
+		}
+	}
+	return ExitClean
+}
+
+func jsonOr(stderr, _ io.Writer, err error) int {
+	if err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
 	}
 	return ExitClean
 }

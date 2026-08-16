@@ -54,6 +54,7 @@ layers:
       - "internal/cli/**"
       - "internal/report/**"
       - "internal/upgrade/**"
+      - "internal/agents/**"
   - name: orchestration
     paths:
       - "internal/session/**"

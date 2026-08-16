@@ -43,6 +43,14 @@ func blindSpots() string {
 				"unusual characters at all. There is nothing to detect without the other copies.",
 		},
 		{
+			"What an MCP server says at runtime",
+			"`augur agents` reads the config that names a server, not the server. A tool's\n" +
+				"name and description are sent by the process when it starts, and they go\n" +
+				"straight into a model's context — so a server can describe its tools one way\n" +
+				"today and another way tomorrow with no file on disk ever changing.\n" +
+				"Checking the config is not checking the server.",
+		},
+		{
 			"Formats with no handler yet",
 			"PDF, Office documents, audio and video are not parsed. A file of one of those\n" +
 				"types is reported by what its raw bytes reveal and nothing more.",
