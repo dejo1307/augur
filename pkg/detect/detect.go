@@ -8,6 +8,7 @@
 package detect
 
 import (
+	"bytes"
 	"unicode/utf8"
 
 	"github.com/dejo1307/augur/pkg/finding"
@@ -24,6 +25,8 @@ const (
 	PNG     Format = "png"
 	WebP    Format = "webp"
 	GIF     Format = "gif"
+	PDF     Format = "pdf"
+	Office  Format = "office" // OOXML (docx/xlsx/pptx) and OpenDocument
 	Binary  Format = "binary" // recognised as binary, no handler claims it
 )
 
@@ -146,6 +149,10 @@ func Sniff(data []byte) Format {
 		return GIF
 	case len(data) >= 12 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WEBP":
 		return WebP
+	case has(data, []byte("%PDF-")):
+		return PDF
+	case has(data, []byte("PK\x03\x04")) && isOfficeZip(data):
+		return Office
 	}
 	if looksTextual(data) {
 		return Text
@@ -157,12 +164,48 @@ func has(data, prefix []byte) bool {
 	return len(data) >= len(prefix) && string(data[:len(prefix)]) == string(prefix)
 }
 
+// isOfficeZip reports whether a zip archive is a word-processor document rather
+// than an archive of files.
+//
+// It looks for the entry names, not for a parsed archive: a zip stores every
+// member's name in the clear in its local header, so the names are findable
+// without inflating anything. That keeps sniffing to a byte search — the handler
+// does the real parse, and this only has to decide which handler.
+func isOfficeZip(data []byte) bool {
+	head := data
+	if len(head) > 4096 {
+		head = head[:4096] // the entries that identify the format come first
+	}
+	for _, marker := range [][]byte{
+		[]byte("word/document.xml"),         // .docx
+		[]byte("xl/workbook.xml"),           // .xlsx
+		[]byte("ppt/presentation.xml"),      // .pptx
+		[]byte("application/vnd.oasis.ope"), // .odt/.ods/.odp, in the uncompressed mimetype entry
+	} {
+		if bytes.Contains(head, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // looksTextual decides whether a file should be read as characters.
 //
 // Valid UTF-8 alone is too weak a test — plenty of binary formats are accidentally
 // valid UTF-8 — and requiring it outright is too strong, because a text file with
 // a few corrupt bytes is exactly a file this tool should have an opinion about. So:
-// no NUL bytes, and the great majority of it decodes.
+// the great majority of it decodes.
+//
+// A NUL byte counts against that budget rather than settling the question by
+// itself, and the difference is not cosmetic. NUL as an outright veto meant a
+// single 0x00 anywhere in a megabyte of prose sent the file down the binary path,
+// where no handler exposes any text and therefore every text detector is skipped.
+// The file came back "nothing hidden found" — not because it was clean, but
+// because nothing had looked. One byte, chosen by whoever wrote the file, turned
+// the tool off silently. Weighing NUL like any other undecodable byte keeps
+// genuinely binary formats out (UTF-16 is half NUL, an executable more) while
+// leaving a text file with a stray control byte as what it is: text, with
+// something in it worth reporting.
 func looksTextual(data []byte) bool {
 	const sample = 8192
 	head := data
@@ -175,7 +218,9 @@ func looksTextual(data []byte) bool {
 	bad := 0
 	for i := 0; i < len(head); {
 		if head[i] == 0x00 {
-			return false // NUL is the classic binary tell
+			bad++
+			i++
+			continue
 		}
 		r, size := utf8.DecodeRune(head[i:])
 		if r == utf8.RuneError && size == 1 {

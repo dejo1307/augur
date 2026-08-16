@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/dejo1307/augur/internal/decode"
 	"github.com/dejo1307/augur/internal/runeinfo"
@@ -291,6 +292,11 @@ func corpus(t *testing.T) [][]byte {
 		[]byte("emoji \U0001F600" + string(decode.EncodeVariationSelectors([]byte("hidden here"))) + " done\n"),
 		[]byte("line\u2028separator\u2029paragraph\n"),
 		[]byte("private \ue000 use\n"),
+		[]byte("conceal \x1b[8mhidden from the screen\x1b[0m here\n"),
+		[]byte("coloured \x1b[31mred\x1b[0m   \nand a trailing escape \x1b[0m\n"),
+		[]byte("a nul \x00 byte in otherwise ordinary prose\n"),
+		[]byte("annotation \ufff9hidden\ufffashown\ufffb end\n"),
+		[]byte("braille \u2800\u2800 padding\n"),
 	}
 
 	rng := rand.New(rand.NewSource(1307))
@@ -302,7 +308,11 @@ func corpus(t *testing.T) [][]byte {
 		func() string { return "\u200b" },
 		func() string { return "\u00a0" },
 		func() string { return "\u202e" },
-		func() string { return "\u0430" }, // a lone Cyrillic a, to make mixed-script words
+		func() string { return "\u0430" },  // a lone Cyrillic a, to make mixed-script words
+		func() string { return "\x1b[8m" }, // conceal, which is removable and displays as nothing
+		func() string { return "\x1b[0m" }, // reset, ditto \u2014 and often at the end of a line
+		func() string { return "\x00" },    // a control character in the middle of text
+		func() string { return "\u2800" },  // braille blank: a printing character with no glyph
 	}
 
 	generated := make([][]byte, 0, 800)
@@ -328,15 +338,57 @@ func corpus(t *testing.T) [][]byte {
 // it — a non-breaking space becomes an ordinary one, a trailing run disappears —
 // so comparing whitespace would fail on correct behaviour. What must never change
 // is the sequence of real characters, and that is exactly what this leaves.
+//
+// Escape sequences are removed whole, which is the interesting case here: `ESC[8m`
+// is four bytes of which three are printable ASCII, and if this counted them as
+// visible text then removing a concealment — a thing the tool is supposed to do —
+// would register as damage.
 func visible(s string) string {
 	var b strings.Builder
-	for _, r := range s {
-		if unicode.IsSpace(r) || runeinfo.Classify(r) != runeinfo.Normal {
+	for i := 0; i < len(s); {
+		if n, ok := escapeLen(s[i:]); ok {
+			i += n
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if unicode.IsSpace(r) || unicode.IsControl(r) || runeinfo.Classify(r) != runeinfo.Normal {
 			continue
 		}
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// escapeLen measures an ANSI escape sequence at the start of s, if there is one.
+// Deliberately a second, simpler implementation than the detector's: a test that
+// reuses the code under test to decide what the code under test should have done
+// proves only that it is self-consistent.
+func escapeLen(s string) (int, bool) {
+	if !strings.HasPrefix(s, "\x1b") || len(s) < 2 {
+		return 0, false
+	}
+	switch s[1] {
+	case '[':
+		for i := 2; i < len(s); i++ {
+			if s[i] >= 0x40 && s[i] <= 0x7E {
+				return i + 1, true
+			}
+		}
+		return 0, false
+	case ']', 'P', '^', '_':
+		if i := strings.IndexAny(s, "\x07"); i > 0 {
+			return i + 1, true
+		}
+		if i := strings.Index(s[2:], "\x1b\\"); i >= 0 {
+			return 2 + i + 2, true
+		}
+		return 0, false
+	}
+	if s[1] >= 0x40 && s[1] <= 0x7E {
+		return 2, true
+	}
+	return 0, false
 }
 
 func kindCounts(s finding.Set) map[finding.Kind]int {

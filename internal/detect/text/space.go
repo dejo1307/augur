@@ -107,18 +107,52 @@ func isBlank(r rune) bool {
 // had already walked past. The file would need a second pass to settle, and the
 // tool would report a file as verified while a re-scan disagreed.
 //
+// Escape sequences count for exactly the same reason and are the case that shows
+// the rule was about the right thing: `ESC[0m` at the end of a line is four
+// printable bytes and displays as nothing at all, so a space in front of it is
+// trailing whitespace to every reader and was not to this code until the sequence
+// was recognised as a unit.
+//
 // Deciding it this way needs no coordination between detectors: the zone is a
 // property of the text, and every detector can see the text.
 func endOfLineZone(s string, i int) bool {
-	for _, r := range s[i:] {
+	for j := i; j < len(s); {
+		if e, ok := escapeAt(s, j); ok {
+			j += e.length
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[j:])
 		if r == '\n' {
 			return true
 		}
 		if !isBlank(r) && !runeinfo.Classify(r).Invisible() {
 			return false
 		}
+		j += size
 	}
 	return true // end of file counts as end of line
+}
+
+// visibleEnd returns the byte offset just past the last character of a line that
+// a reader can actually see, which is where its end-of-line zone begins.
+//
+// Scanned forwards rather than walked backwards from the end, because an escape
+// sequence can only be recognised from its introducer: read backwards, `ESC[0m`
+// is an `m`, a `0`, a `[` and then a surprise.
+func visibleEnd(line string) int {
+	end := 0
+	for i := 0; i < len(line); {
+		if e, ok := escapeAt(line, i); ok {
+			i += e.length
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		i += size
+		if !isBlank(r) && !runeinfo.Classify(r).Invisible() {
+			end = i
+		}
+	}
+	return end
 }
 
 // blankRun is a stretch of whitespace inside a line's end-of-line zone.
@@ -162,18 +196,10 @@ func (d Trailing) Detect(src *detect.Source) (finding.Set, error) {
 			}
 			line := s[lineStart:i]
 
-			// Walk back over everything invisible to find where the zone starts.
-			// Hidden characters are stepped over, not claimed: they belong to the
-			// Hidden detector, and claiming them here would mean two detectors
-			// producing overlapping edits for the same bytes.
-			zone := len(line)
-			for zone > 0 {
-				r, size := utf8.DecodeLastRuneInString(line[:zone])
-				if !isBlank(r) && !runeinfo.Classify(r).Invisible() {
-					break
-				}
-				zone -= size
-			}
+			// Everything invisible is stepped over, not claimed: it belongs to the
+			// Hidden and Control detectors, and claiming it here would mean two
+			// detectors producing overlapping edits for the same bytes.
+			zone := visibleEnd(line)
 
 			for _, run := range blankRuns(line, zone) {
 				// A bare \r is the other half of a CRLF line ending, not a payload.

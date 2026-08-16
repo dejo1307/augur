@@ -74,6 +74,34 @@ characters, variation selectors, private-use codepoints, bidi controls (Trojan
 Source), words that mix Latin with Cyrillic or Greek, exotic spaces, trailing
 whitespace, byte-order marks, invalid UTF-8.
 
+Invisible characters are classified by Unicode's own category rather than against
+a list of the blocks somebody had heard of, so interlinear annotation, the musical
+and Egyptian format controls, and whatever Unicode adds next are caught without
+this tool being taught about them one at a time.
+
+**Bytes your terminal acts on instead of printing** — ANSI escape sequences, with
+what each one does spelled out: `ESC[8m` conceals the text after it, `ESC]52;`
+writes your system clipboard, `ESC]8;` attaches a link to text that need not
+resemble it. And carriage returns in the middle of a line, which repaint what was
+already printed, so the command you read and the command that runs are different
+text.
+
+**Words wearing a costume** — `𝐢𝐠𝐧𝐨𝐫𝐞`, `ｉｇｎｏｒｅ`, `ɪɢɴᴏʀᴇ`: the Latin alphabet
+in one of Unicode's alternate copies of it, which reads as English and matches
+nothing. And whole words substituted alphabet for alphabet — `раураӏ.com` is six
+Cyrillic letters and no Latin ones, so nothing about it is mixed and every letter
+is a lookalike. Both are reported by what they read as, not by codepoint.
+
+**Text the document hides** — an element styled to zero size or to the colour of
+the page, a `hidden` attribute, an HTML or markdown comment. The gap that matters
+in a `CLAUDE.md`: a person reviews it rendered, and a model reads the source.
+
+**The shape of a distribution** — one zero-width space is a paste artefact and is
+reported as a notice. The same character on sixty lines in a row is a mark
+identifying which copy of the document you were given, and that is a fact about
+the set rather than about any character in it, so augur reports it as its own
+finding.
+
 **And it reads them.** A run of invisible characters is not reported as a count.
 augur reverses the three published smuggling schemes — tag characters,
 variation selectors, and zero-width binary — and shows you the sentence:
@@ -89,8 +117,27 @@ coordinates you can read), XMP, IPTC, ICC profiles, JPEG comments, PNG text
 chunks, C2PA provenance manifests, and bytes sitting past the container's logical
 end.
 
+**In PDFs** — text drawn in rendering mode 3, which positions it, makes it
+selectable and copyable, and lays down no ink; text filled with white; the
+document information dictionary and XMP packet; embedded JavaScript and file
+attachments; incremental saves, which keep every earlier revision of the document
+inside the current one; and bytes past the last `%%EOF`.
+
+**In Office and OpenDocument files** — runs marked hidden, runs coloured to match
+the page, tracked changes carrying the wording that was deleted, review comments,
+the author and the account that last saved it, and bytes stapled past the end of
+the archive.
+
 The text detectors run over the text inside an image too, so a message hidden in
-a photo's XMP packet is found by the same code that reads a `.txt` file.
+a photo's XMP packet is found by the same code that reads a `.txt` file. The same
+arrangement covers documents: the text of a `.docx` and the strings inside a PDF
+are handed to the detectors that read a `.txt` file, so a zero-width payload in a
+PDF's title is found by the code that finds one in a note.
+
+Documents are read and never written. A PDF records the byte offset of every
+object in a table and an Office file is a compressed archive, so removing anything
+means rebuilding the file rather than editing it — and augur only removes what it
+can remove exactly. Those findings are reported and left in place, and say so.
 
 ## Agent instruction files
 
