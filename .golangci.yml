@@ -1,0 +1,51 @@
+version: "2"
+
+# The baseline is clean, so CI gates the whole tree: any new finding fails the
+# build. Keeping it that way is cheaper than triaging a backlog later.
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - copyloopvar
+    - misspell
+    - unconvert
+    - usestdlibvars
+
+  settings:
+    misspell:
+      # The prose in this repo is British ("recognised", "individualised") and
+      # the linter would otherwise flag every comment in it.
+      locale: UK
+    staticcheck:
+      checks:
+        - all
+        # ST1000: package comments are required here by review, not by a linter
+        # that also wants them phrased "Package x ...". Ours say more than that.
+        - -ST1000
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test fixtures deliberately assemble malformed containers and unusual
+      # text; the interesting failure is the assertion, not an unchecked helper.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+      # internal/cli writes diagnostics to stderr and a final line to stdout.
+      # There is no recovery from a failed write to a terminal that is already
+      # gone, and the alternative — reporting that we could not report — is
+      # noise. Scoped to this package on purpose: report.Text does check its
+      # writes, via the errWriter in internal/report, because it renders the
+      # payload rather than a message about it.
+      - path: internal/cli/
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

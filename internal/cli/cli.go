@@ -67,8 +67,9 @@ func Scan(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "augur:", err)
 			return ExitError
 		}
-	} else {
-		report.Text(stdout, s.Path, string(s.Result.Source.Format), set)
+	} else if err := report.Text(stdout, s.Path, string(s.Result.Source.Format), set); err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
 	}
 
 	if len(set) > 0 {

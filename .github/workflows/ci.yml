@@ -1,40 +1,185 @@
-name: ci
+name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-      - run: go build ./...
-      - run: go vet ./...
-      - name: gofmt
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - run: go test -race ./...
 
-  architecture:
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # -count=1 defeats the test cache: a green run here has to mean the tests
+      # ran, not that they ran once on someone's laptop a week ago.
+      - name: Test
+        run: go test -race -count=1 -coverprofile=coverage.out -covermode=atomic ./...
+
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            go tool cover -func=coverage.out | tail -1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The property tests are the load-bearing ones — they are what makes "cleaning
+  # is lossless" a checked claim rather than a sentence in the README — so they
+  # get their own gate, with the seed corpus widened well past the default.
+  invariants:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          # enola grades a change against a pinned baseline, so it needs the
-          # history the baseline refers to rather than a single commit.
-          fetch-depth: 0
-      - uses: actions/setup-go@v5
+          go-version-file: go.mod
+          cache: true
+
+      - name: Clean/scan invariants
+        run: |
+          set -o pipefail
+          go test -count=1 -v \
+            -run 'TestCleanIsIdentityOnEmptySelection|TestCleanRemovesExactlyWhatWasSelected|TestCleanIsIdempotent|TestCleanImageIsIdentityOnEmptySelection|TestVisibleTextSurvivesCleaning|TestUnselectedFindingsAreLeftAlone|TestImageCleanIsLossless|TestSaveLeavesTheOriginalAlone|TestVerificationChecksTheBytesOnDisk' \
+            ./internal/scan/ ./internal/session/ | tee invariants.log
+
+          # `go test -run` exits 0 when the pattern matches nothing, so a typo in
+          # the regex above would turn this gate green while testing nothing at
+          # all. That is a worse outcome than having no gate, so fail on it.
+          if grep -q 'no tests to run' invariants.log; then
+            echo "::error::the -run pattern matched no tests in at least one package"
+            exit 1
+          fi
+
+          # And a floor on how many actually ran, so deleting an invariant test
+          # has to be a deliberate edit here rather than a silent reduction.
+          passed="$(grep -c '^--- PASS' invariants.log)"
+          echo "invariant tests passed: $passed"
+          [ "$passed" -ge 9 ]
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-      - name: install enola
-        run: go install github.com/enola-labs/enola/cmd/enola@latest
-      - name: layer gate
-        # The layer order in enola-intent.yaml is declared, so it verdicts at
-        # confidence 1.00 and --fail-on=layers alone is enough to enforce it. A
-        # package that starts depending outwards fails here, and the finding names
-        # the import that did it.
-        run: enola check --fail-on=layers mcp-arch.yaml
+          go-version-file: go.mod
+          cache: true
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          # Pinned rather than `latest`: with `latest` the linter is whatever
+          # shipped that morning, so an unrelated PR can go red on a new check
+          # its author never touched. Bump this deliberately.
+          version: v2.12.2
+
+  # ENFORCING. The architecture declared in enola-intent.yaml, graded against the
+  # merge base.
+  #
+  # fail-on: layers,intent — two policies, for two different kinds of drift.
+  #
+  #   layers  a package that starts depending outwards. Declared rather than
+  #           inferred, so it verdicts at 1.00 and --fail-on alone enforces it.
+  #           Not `cycles`: this is Go, and the compiler already refuses import
+  #           cycles between packages. The layer order is the part it cannot
+  #           check — nothing stops internal/detect importing internal/scan
+  #           today except this gate.
+  #
+  #   intent  the decision pages in docs/decisions/ carry anchors into the code
+  #           they govern. When that code moves or dies, the anchor dangles and
+  #           this fails — which is the only mechanism that keeps a decision
+  #           document from quietly becoming fiction. A stale doc is worse than
+  #           no doc, because it is still believed.
+  architecture:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # merge-base needs history; a depth-1 clone has none
+
+      - name: Resolve the merge base
+        id: base
+        run: |
+          # actions/checkout leaves a PR on a merge ref, so origin/<base> is not
+          # guaranteed to be present. Fetch it explicitly.
+          git fetch --no-tags --quiet origin \
+            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref }}")" >> "$GITHUB_OUTPUT"
+
+      - name: Install enola
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # Pin the baseline from the merge base, then grade the PR head against it.
+      # Two index passes, which for a repo this size is milliseconds.
+      - name: Pin the baseline at the merge base
+        run: |
+          git checkout --quiet --detach "${{ steps.base.outputs.sha }}"
+          enola baseline pin mcp-arch.yaml
+          git checkout --quiet -
+
+      # `enola check` exit codes: 0 clean · 1 regression · 2 error · 3 declined.
+      # 2 and 3 fail the job on purpose — both mean the gate did not actually
+      # run, and a gate that passes when it could not run is worse than no gate.
+      #
+      # --min-confidence=0.8 is load-bearing and NOT a loosening. The default
+      # floor is 1.00, and a dangling code anchor verdicts at 0.80 — so
+      # `--fail-on=intent` on its own is a policy that never grades the finding
+      # it exists for. It was silently green here until that was checked against
+      # a deliberately broken anchor. `layers` is unaffected: a declared order
+      # verdicts at 1.00, and the inferred go-standard pattern enola also reports
+      # is descriptive and never graded.
+      - name: Grade the change
+        run: enola check --fail-on=layers,intent --min-confidence=0.8 mcp-arch.yaml
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...

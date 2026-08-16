@@ -21,6 +21,21 @@ says exactly what it hid.
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/dejo1307/augur/main/install.sh | bash
+```
+
+Installs to `~/.local/bin`. The script verifies the release checksum before it
+installs anything and refuses outright if it does not match — piping a downloaded
+binary onto your PATH is exactly the situation that check exists for.
+
+Override the destination with `AUGUR_INSTALL_DIR`, or pin a version with
+`AUGUR_VERSION`. Prebuilt binaries cover Linux and macOS on amd64 and arm64, and
+Windows on amd64; [releases](https://github.com/dejo1307/augur/releases) has them
+all with checksums.
+
+With a Go toolchain (1.25.8 or newer):
+
+```sh
 go install github.com/dejo1307/augur/cmd/augur@latest
 ```
 
@@ -124,11 +139,19 @@ file bytes. The layer order lives in [`enola-intent.yaml`](enola-intent.yaml) an
 is checked by [enola](https://github.com/enola-labs/enola):
 
 ```sh
-enola check --fail-on=layers mcp-arch.yaml
+enola check --fail-on=layers,intent mcp-arch.yaml
 ```
 
-The decisions behind the boundaries are in [docs/decisions/](docs/decisions/),
-anchored to the code they govern.
+Two policies, for two kinds of drift. **`layers`** fails a package that starts
+depending outwards — declared rather than inferred, so it verdicts at 1.00.
+**`intent`** fails a dangling anchor: the decision pages in
+[docs/decisions/](docs/decisions/) point at the code they govern, and when that
+code moves or dies the gate says so. It is the only thing keeping a decision
+document from quietly becoming fiction, and a stale one is worse than none
+because it is still believed.
+
+Not `cycles` — this is Go, and the compiler already refuses import cycles between
+packages. The layer order is the part it cannot check.
 
 ## Development
 
@@ -147,4 +170,18 @@ vhs demo/demo.tape
 ```
 
 Dependencies: Bubble Tea, Bubbles and Lipgloss for the viewer. The scanner, the
-decoders, the EXIF reader and the container walkers are standard library only.
+decoders, the EXIF reader and the container walkers are standard library only —
+and nothing needs cgo, so every release platform cross-compiles from one runner.
+
+CI runs on every pull request: build, vet, gofmt, race tests with coverage, a
+separate gate for the clean/scan invariants, golangci-lint, govulncheck, and the
+architecture gate above.
+
+The Go version in `go.mod` is a floor rather than a preference: 1.25.8 is the
+first release fixing a standard-library advisory that `govulncheck` flags as
+reachable from the file picker.
+
+## License
+
+[Apache-2.0](LICENSE). Release archives carry `LICENSE` and `NOTICE` beside the
+binary, which is where anyone installing via `install.sh` will actually see them.
