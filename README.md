@@ -130,6 +130,32 @@ automatically.
 Files are reported even when the agent that reads them is not installed — they
 arrive with a clone, and will be read by whoever does have it.
 
+It also covers what agents **execute**, not only what they read: hook commands,
+MCP server entries, and permission allowlists in `settings.json`, `.mcp.json`,
+`.claude.json`, `.cursor/mcp.json` and friends. A bidi override in a hook command
+is Trojan Source with an agent pulling the trigger, and a homoglyph in an
+allowlist entry means the rule you think you wrote silently never matches:
+
+```
+! ./.claude/settings.json
+    hooks, permissions and MCP servers for this project
+    [alarm] hidden message, 24 characters
+      in hooks.Stop[0].hooks[0].command
+    [concern] "teѕt" mixes Cyrillic and Latin
+      in permissions.allow[1]
+```
+
+Config findings are reported as a JSON path and never quoted. These files hold
+auth tokens, and printing the text around a finding is how a bug report ends up
+carrying someone's credentials.
+
+**It does not check what an MCP server says at runtime.** A tool's name and
+description are sent by the process when it starts and go straight into the
+model's context, so a server can describe itself one way today and another way
+tomorrow without any file on disk changing. Checking the config is not checking
+the server, and augur says so in its blind-spots panel rather than implying
+otherwise.
+
 It exits 1 when anything is found, so it works as a CI check on a repository's
 own agent files. The default floor is `--min-severity=concern`; a trailing space
 in each of forty memory files is not the question this command answers, and the

@@ -206,6 +206,9 @@ func Agents(args []string, stdout, stderr io.Writer) int {
 				all := s.Findings()
 				entry.Findings = atLeast(all, threshold)
 				entry.Suppressed = len(all) - len(entry.Findings)
+				if f.Kind == agents.Config && len(entry.Findings) > 0 {
+					entry.Raw = s.Original
+				}
 			}
 			scanned = append(scanned, entry)
 		}

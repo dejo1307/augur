@@ -15,6 +15,9 @@ import (
 // AgentFile is one discovered instruction file after scanning.
 type AgentFile struct {
 	Found agents.Found
+	// Raw is the file's bytes, kept only so a config finding can be located
+	// structurally. Nil for anything that is not a config.
+	Raw []byte
 	// Findings are those at or above the requested severity.
 	Findings finding.Set
 	// Suppressed counts the findings below it. Reported rather than dropped:
@@ -91,6 +94,16 @@ func Agents(w io.Writer, roots agents.Roots, installs []agents.Install, scanned 
 			e.printf("      %s\n", f.Found.Why)
 			for _, x := range topFindings(f.Findings, 3) {
 				e.printf("      [%s] %s\n", x.Severity, x.Label)
+				// A config file is located by JSON path, never quoted. These
+				// files hold auth tokens, and detailLine would print the text
+				// around the finding — which is how a bug report ends up
+				// carrying someone's credentials.
+				if f.Found.Kind == agents.Config {
+					if p := agents.PathAt(f.Raw, x.Span.Offset); p != "" {
+						e.printf("        in %s\n", p)
+					}
+					continue
+				}
 				if d := detailLine(x); d != "" {
 					e.printf("        %s\n", d)
 				}

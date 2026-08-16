@@ -12,6 +12,7 @@ import (
 type Found struct {
 	Agent Agent
 	Scope Scope
+	Kind  Kind
 	// Path is absolute.
 	Path string
 	// Why is the source's explanation of what reads this file.
@@ -80,7 +81,7 @@ func Discover(roots Roots) []Install {
 				}
 				seen[p] = true
 				inst.Files = append(inst.Files, Found{
-					Agent: agent, Scope: src.Scope, Path: p, Why: src.Why,
+					Agent: agent, Scope: src.Scope, Kind: src.Kind, Path: p, Why: src.Why,
 				})
 			}
 		}
