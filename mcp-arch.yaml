@@ -1,0 +1,27 @@
+repo: "."
+
+# `ignore:` REPLACES enola's built-in list rather than extending it, so this file has
+# to be complete for this repo rather than a delta. That is affordable here because
+# augur is a single Go module with no vendored trees.
+#
+# The one entry that matters: enola's default ignores `**/*.md`, which silently kept
+# docs/decisions/ from compiling — the pages parsed fine and were simply never offered
+# to the extractor, so `governing_intent` answered "not asked" rather than "nothing
+# governs this". Markdown is NOT ignored here, because in this repo markdown carries
+# declared intent rather than prose.
+ignore:
+  - "**/.git/**"
+  - "**/vendor/**"
+  - "**/testdata/**"
+  - "**/*_test.go"
+  - ".enola/**"
+  - "dist/**"
+  # Demo fixtures and the recording harness: assets, not architecture.
+  - "demo/**"
+
+# extractors:/explainers:/renderers: are deliberately absent. Each of those keys
+# replaces the built-in list, so pinning them here can only fall behind enola.
+
+output:
+  dir: ".enola"
+  max_context_tokens: 4000

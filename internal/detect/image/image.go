@@ -1,0 +1,441 @@
+package image
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/dejo1307/augur/pkg/detect"
+	"github.com/dejo1307/augur/pkg/finding"
+)
+
+// Kinds emitted by this detector.
+const (
+	KindEXIF       = finding.Kind("exif")
+	KindXMP        = finding.Kind("xmp")
+	KindIPTC       = finding.Kind("iptc")
+	KindICC        = finding.Kind("icc-profile")
+	KindComment    = finding.Kind("comment")
+	KindPNGText    = finding.Kind("png-text")
+	KindC2PA       = finding.Kind("c2pa-manifest")
+	KindTrailing   = finding.Kind("trailing-bytes")
+	KindUnknownApp = finding.Kind("unknown-segment")
+)
+
+// Container is the detector for image metadata, provenance and stowaway bytes.
+type Container struct{}
+
+func (Container) Name() string { return "container" }
+
+func (Container) Applies(f detect.Format) bool {
+	switch f {
+	case detect.JPEG, detect.PNG, detect.WebP:
+		return true
+	}
+	return false
+}
+
+// walk dispatches to the right container walker.
+func walk(data []byte, f detect.Format) (Walk, error) {
+	switch f {
+	case detect.JPEG:
+		return WalkJPEG(data)
+	case detect.PNG:
+		return WalkPNG(data)
+	case detect.WebP:
+		return WalkWebP(data)
+	}
+	return Walk{}, fmt.Errorf("no walker for %s", f)
+}
+
+func (d Container) Detect(src *detect.Source) (finding.Set, error) {
+	w, err := walk(src.Bytes, src.Format)
+	if err != nil {
+		return nil, err
+	}
+
+	var out finding.Set
+	for _, b := range w.Blocks {
+		if b.Essential {
+			continue
+		}
+		if f, ok := d.describe(b, src.Format); ok {
+			out = append(out, f)
+		}
+	}
+
+	if len(w.Trailing) > 0 {
+		out = append(out, finding.New(d.Name(), KindTrailing, finding.Payload, finding.Alarm,
+			finding.Span{Offset: w.TrailingOffset, Length: len(w.Trailing), Exact: true},
+			fmt.Sprintf("%d bytes after the end of the image", len(w.Trailing)),
+			"The image format says the file ended before these bytes. Viewers ignore them, so "+
+				"they are a place to keep something that travels with the picture without "+
+				"appearing in it.").
+			WithDetail(finding.NewBlob(len(w.Trailing), preview(w.Trailing, 64), sniffBytes(w.Trailing))).
+			Deletable())
+	}
+	return out, nil
+}
+
+// describe turns one non-essential block into a finding.
+func (d Container) describe(b Block, format detect.Format) (finding.Finding, bool) {
+	span := finding.Span{Offset: b.Offset, Length: b.Length, Exact: true}
+	mk := func(kind finding.Kind, cat finding.Category, sev finding.Severity, label, why string) finding.Finding {
+		return finding.New(d.Name(), kind, cat, sev, span, label, why).Deletable()
+	}
+
+	switch {
+	case isC2PA(b):
+		return mk(KindC2PA, finding.Provenance, finding.Notice,
+			fmt.Sprintf("C2PA provenance manifest (%s)", humanBytes(b.Length)),
+			"A signed record of where this image came from and what was done to it. It is "+
+				"metadata like any other block here and can be removed — but unlike the rest, "+
+				"removing it takes away evidence rather than exposure.",
+		).WithDetail(finding.NewTable("c2pa", c2paRows(b))), true
+
+	case isEXIF(b, format):
+		rows := exifRows(exifTIFF(b, format))
+		sev := finding.Notice
+		for _, r := range rows {
+			if r.Sensitive {
+				sev = finding.Concern
+			}
+		}
+		return mk(KindEXIF, finding.Metadata, sev,
+			exifLabel(b, rows),
+			"Camera and capture data recorded when the image was made. It travels with the "+
+				"file through copies and uploads unless something strips it.",
+		).WithDetail(finding.NewTable("exif", rows)), true
+
+	case isXMP(b, format):
+		return mk(KindXMP, finding.Metadata, finding.Notice,
+			fmt.Sprintf("XMP metadata (%s)", humanBytes(b.Length)),
+			"An XML metadata block. Editors use it for authorship, edit history and rights, "+
+				"and generators use it to record which tool produced the file.",
+		).WithDetail(finding.NewTable("xmp", xmpRows(b.Payload))), true
+
+	case isIPTC(b, format):
+		return mk(KindIPTC, finding.Metadata, finding.Notice,
+			fmt.Sprintf("IPTC / Photoshop resource block (%s)", humanBytes(b.Length)),
+			"Publishing metadata: captions, credits, keywords and location names, written by "+
+				"photo editors and news systems.",
+		), true
+
+	case isICC(b, format):
+		return mk(KindICC, finding.Metadata, finding.Notice,
+			fmt.Sprintf("ICC colour profile (%s)", humanBytes(b.Length)),
+			"Describes how the image's colours should be interpreted. Removing it is safe for "+
+				"the file but can shift how colours appear on a wide-gamut display.",
+		), true
+
+	case format == detect.JPEG && b.Kind == "COM":
+		text := string(b.Payload)
+		return mk(KindComment, finding.Metadata, finding.Notice,
+			fmt.Sprintf("JPEG comment: %q", truncate(text, 48)),
+			"A free-text comment stored in the file. Nothing shows it, so it is a convenient "+
+				"place to leave a note or a marker.",
+		).WithDetail(finding.NewTable("comment", []finding.KV{{Key: "text", Value: text}})), true
+
+	case format == detect.PNG && isPNGText(b.Kind):
+		key, val := pngText(b)
+		return mk(KindPNGText, finding.Metadata, finding.Notice,
+			fmt.Sprintf("PNG %s chunk: %s", b.Kind, key),
+			"A text field stored in the image. Generators commonly record the prompt, the "+
+				"model and the settings here, and nothing displays it.",
+		).WithDetail(finding.NewTable("png:"+b.Kind, []finding.KV{{Key: key, Value: truncate(val, 400)}})), true
+
+	case format == detect.JPEG && strings.HasPrefix(b.Kind, "APP"):
+		return mk(KindUnknownApp, finding.Metadata, finding.Notice,
+			fmt.Sprintf("%s segment, %s, purpose not recognised", b.Kind, humanBytes(b.Length)),
+			"An application segment augur does not recognise. It is not part of the "+
+				"picture, so something put it there on purpose.",
+		).WithDetail(finding.NewBlob(len(b.Payload), preview(b.Payload, 48), sniffBytes(b.Payload))), true
+	}
+	return finding.Finding{}, false
+}
+
+// ---------------------------------------------------------------------------
+// block identification
+// ---------------------------------------------------------------------------
+
+const (
+	exifPrefix = "Exif\x00\x00"
+	xmpPrefix  = "http://ns.adobe.com/xap/1.0/\x00"
+	iptcPrefix = "Photoshop 3.0\x00"
+	iccPrefix  = "ICC_PROFILE\x00"
+)
+
+func isEXIF(b Block, f detect.Format) bool {
+	switch f {
+	case detect.JPEG:
+		return b.Kind == "APP1" && bytes.HasPrefix(b.Payload, []byte(exifPrefix))
+	case detect.PNG:
+		return b.Kind == "eXIf"
+	case detect.WebP:
+		return b.Kind == "EXIF"
+	}
+	return false
+}
+
+// exifTIFF returns the TIFF block inside an EXIF container, skipping whatever
+// preamble the format puts in front of it.
+func exifTIFF(b Block, f detect.Format) []byte {
+	if f == detect.JPEG && bytes.HasPrefix(b.Payload, []byte(exifPrefix)) {
+		return b.Payload[len(exifPrefix):]
+	}
+	return b.Payload
+}
+
+func isXMP(b Block, f detect.Format) bool {
+	switch f {
+	case detect.JPEG:
+		return b.Kind == "APP1" && bytes.HasPrefix(b.Payload, []byte(xmpPrefix))
+	case detect.WebP:
+		return b.Kind == "XMP "
+	case detect.PNG:
+		return b.Kind == "iTXt" && bytes.Contains(b.Payload, []byte("XML:com.adobe.xmp"))
+	}
+	return false
+}
+
+func isIPTC(b Block, f detect.Format) bool {
+	return f == detect.JPEG && b.Kind == "APP13" && bytes.HasPrefix(b.Payload, []byte(iptcPrefix))
+}
+
+func isICC(b Block, f detect.Format) bool {
+	switch f {
+	case detect.JPEG:
+		return b.Kind == "APP2" && bytes.HasPrefix(b.Payload, []byte(iccPrefix))
+	case detect.PNG:
+		return b.Kind == "iCCP"
+	case detect.WebP:
+		return b.Kind == "ICCP"
+	}
+	return false
+}
+
+// isC2PA recognises a Content Credentials manifest. It rides in a JUMBF box, which
+// is APP11 in JPEG and the caBX chunk in PNG.
+func isC2PA(b Block) bool {
+	if b.Kind == "caBX" {
+		return true
+	}
+	if b.Kind != "APP11" {
+		return false
+	}
+	// JUMBF boxes carry a "jumb" type; the C2PA store labels itself.
+	return bytes.Contains(b.Payload, []byte("jumb")) &&
+		(bytes.Contains(b.Payload, []byte("c2pa")) || bytes.Contains(b.Payload, []byte("cai")))
+}
+
+func isPNGText(kind string) bool {
+	return kind == "tEXt" || kind == "iTXt" || kind == "zTXt"
+}
+
+// pngText splits a PNG text chunk into its keyword and value. zTXt values are
+// compressed; rather than decompress them here, the keyword is reported and the
+// value left described but unread — the block is removable either way, and
+// claiming to have read something we did not would be the wrong kind of helpful.
+func pngText(b Block) (string, string) {
+	i := bytes.IndexByte(b.Payload, 0)
+	if i < 0 {
+		return string(b.Payload), ""
+	}
+	key := string(b.Payload[:i])
+	rest := b.Payload[i+1:]
+	switch b.Kind {
+	case "tEXt":
+		return key, string(rest)
+	case "iTXt":
+		// compression flag, compression method, language tag, translated keyword
+		if len(rest) < 2 {
+			return key, ""
+		}
+		if rest[0] != 0 {
+			return key, "<compressed>"
+		}
+		parts := bytes.SplitN(rest[2:], []byte{0}, 3)
+		if len(parts) == 3 {
+			return key, string(parts[2])
+		}
+		return key, ""
+	default: // zTXt
+		return key, "<compressed>"
+	}
+}
+
+func c2paRows(b Block) []finding.KV {
+	rows := []finding.KV{{Key: "size", Value: humanBytes(b.Length)}}
+	for _, claim := range []string{"c2pa.actions", "c2pa.hash", "urn:uuid", "adobe", "openai", "google"} {
+		if bytes.Contains(bytes.ToLower(b.Payload), []byte(claim)) {
+			rows = append(rows, finding.KV{Key: "mentions", Value: claim})
+		}
+	}
+	return rows
+}
+
+// xmpRows pulls the handful of XMP fields worth naming. A full XML parse is not
+// warranted: the user is deciding about the block, not about a field.
+func xmpRows(payload []byte) []finding.KV {
+	s := string(payload)
+	var rows []finding.KV
+	for _, f := range []string{
+		"xmp:CreatorTool", "tiff:Make", "tiff:Model", "dc:creator", "dc:rights",
+		"photoshop:Credit", "xmpMM:DocumentID", "xmpMM:InstanceID", "GPano:",
+	} {
+		if i := strings.Index(s, f); i >= 0 {
+			rows = append(rows, finding.KV{
+				Key:       strings.TrimSuffix(f, ":"),
+				Value:     truncate(strings.TrimSpace(fieldAfter(s[i:], f)), 80),
+				Sensitive: strings.Contains(f, "creator") || strings.Contains(f, "GPano"),
+			})
+		}
+	}
+	if len(rows) == 0 {
+		rows = append(rows, finding.KV{Key: "size", Value: humanBytes(len(payload))})
+	}
+	return rows
+}
+
+func fieldAfter(s, field string) string {
+	s = strings.TrimPrefix(s, field)
+	s = strings.TrimLeft(s, "=\"> ")
+	for i, r := range s {
+		if r == '<' || r == '"' || r == '\n' {
+			return s[:i]
+		}
+	}
+	return truncate(s, 80)
+}
+
+func exifLabel(b Block, rows []finding.KV) string {
+	for _, r := range rows {
+		if r.Key == "GPSLatitude" {
+			return fmt.Sprintf("EXIF with GPS coordinates (%s)", humanBytes(b.Length))
+		}
+	}
+	return fmt.Sprintf("EXIF metadata, %d field(s) (%s)", len(rows), humanBytes(b.Length))
+}
+
+// ---------------------------------------------------------------------------
+// text regions, so the text detectors read an image's metadata too
+// ---------------------------------------------------------------------------
+
+// Regions exposes the readable text an image carries, so the same detectors that
+// find a hidden message in a .txt file find one in a JPEG's XMP packet. It falls
+// straight out of the layering, and it is the reason the two detector families
+// live behind one interface.
+func Regions(data []byte, format detect.Format) []detect.Region {
+	w, err := walk(data, format)
+	if err != nil {
+		return nil
+	}
+	var out []detect.Region
+	for _, b := range w.Blocks {
+		if b.Essential || len(b.Payload) == 0 {
+			continue
+		}
+		switch {
+		case isXMP(b, format):
+			// The XMP packet is stored verbatim, so offsets are exact — but it is
+			// inside a length-prefixed segment, so the text cleaner declines to
+			// own it and the container cleaner drops the whole block instead.
+			off, text := skipPrefix(b, xmpPrefix)
+			out = append(out, detect.Region{Name: "xmp", Offset: off, Text: text, Exact: true})
+
+		case format == detect.JPEG && b.Kind == "COM":
+			out = append(out, detect.Region{
+				Name: "comment", Offset: b.PayloadOffset, Text: string(b.Payload), Exact: true,
+			})
+
+		case format == detect.PNG && isPNGText(b.Kind):
+			key, val := pngText(b)
+			if val == "" || val == "<compressed>" {
+				continue
+			}
+			// tEXt and uncompressed iTXt store the value verbatim; its offset is
+			// the chunk payload plus the keyword and its terminator.
+			off := b.PayloadOffset + len(b.Payload) - len(val)
+			out = append(out, detect.Region{
+				Name: "png:" + b.Kind + "[" + key + "]", Offset: off, Text: val, Exact: true,
+			})
+		}
+	}
+	return out
+}
+
+func skipPrefix(b Block, prefix string) (int, string) {
+	if bytes.HasPrefix(b.Payload, []byte(prefix)) {
+		return b.PayloadOffset + len(prefix), string(b.Payload[len(prefix):])
+	}
+	return b.PayloadOffset, string(b.Payload)
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+func preview(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
+}
+
+// sniffBytes names what a blob looks like, when it looks like anything. Bytes
+// hidden past the end of an image are much more interesting when they are a zip.
+func sniffBytes(b []byte) string {
+	for _, m := range []struct{ magic, name string }{
+		{"PK\x03\x04", "zip archive"},
+		{"\x89PNG", "PNG image"},
+		{"\xFF\xD8\xFF", "JPEG image"},
+		{"%PDF", "PDF document"},
+		{"GIF8", "GIF image"},
+		{"\x7FELF", "ELF executable"},
+		{"MZ", "Windows executable"},
+		{"\x1F\x8B", "gzip data"},
+		{"Rar!", "RAR archive"},
+	} {
+		if bytes.HasPrefix(b, []byte(m.magic)) {
+			return m.name
+		}
+	}
+	if utf8.Valid(b) && isMostlyPrintable(b) {
+		return "text"
+	}
+	return ""
+}
+
+func isMostlyPrintable(b []byte) bool {
+	if len(b) == 0 {
+		return false
+	}
+	good := 0
+	for _, c := range b {
+		if c >= 0x20 && c < 0x7F || c == '\n' || c == '\t' || c >= 0x80 {
+			good++
+		}
+	}
+	return good*10 >= len(b)*9
+}
+
+func humanBytes(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f kB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+func truncate(s string, n int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}

@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - run: go build ./...
+      - run: go vet ./...
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go test -race ./...
+
+  architecture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # enola grades a change against a pinned baseline, so it needs the
+          # history the baseline refers to rather than a single commit.
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: install enola
+        run: go install github.com/enola-labs/enola/cmd/enola@latest
+      - name: layer gate
+        # The layer order in enola-intent.yaml is declared, so it verdicts at
+        # confidence 1.00 and --fail-on=layers alone is enough to enforce it. A
+        # package that starts depending outwards fails here, and the finding names
+        # the import that did it.
+        run: enola check --fail-on=layers mcp-arch.yaml

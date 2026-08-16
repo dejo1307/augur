@@ -1,0 +1,6 @@
+/augur
+/demo/augur
+/dist/
+.enola/
+.DS_Store
+*.clean.*

@@ -1,0 +1,68 @@
+# augur's declared architecture — read by enola.
+#
+# Written before the first detector existed, which is the point: the layer order is a
+# decision, not a description of whatever the code drifted into. CI gates on it
+# (`enola check --fail-on=layers`), so a pull request that makes a package depend
+# outwards fails and the finding names the import that did it.
+#
+# The order is OUTERMOST FIRST. A layer may depend on the layers below it and on its own
+# peers; depending upwards is the violation.
+#
+# Why the split is where it is:
+#
+#   entrypoint     the binary. Nothing may import into it.
+#   surface        what a human or a pipeline talks to: the TUI, the CLI verbs, the
+#                  report renderers. Two of them, deliberately — a single caller never
+#                  proves an engine is separable, and the headless mode exists partly to
+#                  keep the TUI from quietly becoming the application.
+#   orchestration  one package holding what a *session* is: a file loaded, its findings,
+#                  the user's selection, and the clean-then-re-verify write. Everything
+#                  stateful about "the user is looking at a file" lives here and nowhere
+#                  above it.
+#   engine         sniff the format, dispatch the handlers that apply to it, union the
+#                  findings, hand cleaning to the handler that owns each one.
+#   analysis       the passes: detect (what is in there), decode (what it says), clean
+#                  (take it out). A detector knows the fact vocabulary and nothing above
+#                  it, which is what lets a new one be written without reading the engine.
+#   core           the vocabulary everything rests on: the Finding model, the Detector and
+#                  Cleaner contracts, codepoint naming. Published under pkg/ so a caller
+#                  embedding augur as a library speaks the same words the TUI does.
+#
+# `internal/` sitting above `pkg/` is not backwards: the contract is published outward,
+# the implementations stay inward, and the contract is the bottom of the stack. Visibility
+# is not a layer.
+#
+# What is deliberately NOT declared: any rule about import cycles. Go's compiler already
+# refuses those between packages, and restating a constraint the toolchain enforces earns
+# nothing.
+service:
+  name: augur
+  description: >-
+    Inspects a file for hidden characters, embedded metadata and provenance manifests,
+    explains what it found, and writes a losslessly cleaned copy on request.
+
+layers:
+  - name: entrypoint
+    paths:
+      - "cmd/**"
+  - name: surface
+    paths:
+      - "internal/tui/**"
+      - "internal/cli/**"
+      - "internal/report/**"
+  - name: orchestration
+    paths:
+      - "internal/session/**"
+  - name: engine
+    paths:
+      - "internal/scan/**"
+  - name: analysis
+    paths:
+      - "internal/detect/**"
+      - "internal/decode/**"
+      - "internal/clean/**"
+  - name: core
+    paths:
+      - "internal/runeinfo/**"
+      - "pkg/finding/**"
+      - "pkg/detect/**"
