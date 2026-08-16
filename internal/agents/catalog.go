@@ -64,20 +64,35 @@ func Catalog() []Agent {
 				{Global, ".claude/CLAUDE.md", "loaded into every session on this machine"},
 				{Global, ".claude/agents/*.md", "subagent definitions, loaded when the agent is invoked"},
 				{Global, ".claude/commands/**/*.md", "slash commands, loaded when invoked"},
-				{Global, ".claude/skills/**/SKILL.md", "skills, loaded when their trigger matches"},
+				{Global, ".claude/output-styles/*.md", "output styles, loaded when selected"},
+				// A skill is a directory, not a file. Its SKILL.md routinely says
+				// "see references/foo.md", and the model goes and reads it — so
+				// scanning only SKILL.md covers barely a quarter of what a skill
+				// actually puts into context. On the machine this was written for,
+				// skill directories held 217 markdown files of which 59 were
+				// SKILL.md.
+				{Global, ".claude/skills/**/*.md", "skill instructions, loaded when the skill triggers"},
 				// Installed plugins are third-party content that arrived over the
 				// network, which makes them the least-reviewed instructions here.
-				{Global, ".claude/plugins/**/skills/**/SKILL.md", "installed plugin skill"},
+				{Global, ".claude/plugins/**/skills/**/*.md", "installed plugin skill instructions"},
+				// Scripts a skill ships are run on your behalf rather than read,
+				// which makes a bidi override or a homoglyph in one a Trojan Source
+				// attack with an agent pulling the trigger.
+				{Global, ".claude/plugins/**/skills/**/*.sh", "script run by an installed plugin skill"},
+				{Global, ".claude/plugins/**/skills/**/*.py", "script run by an installed plugin skill"},
 				{Global, ".claude/plugins/**/commands/**/*.md", "installed plugin command"},
 				{Global, ".claude/plugins/**/agents/*.md", "installed plugin subagent"},
 				// Auto-memory is loaded into context at the start of every session
 				// for its project, without anyone opening it.
 				{Global, ".claude/projects/*/memory/*.md", "auto-memory, loaded into context each session"},
-				{Project, "CLAUDE.md", "loaded for every session in this project"},
-				{Project, "CLAUDE.local.md", "loaded for every session in this project"},
+				// Nested, because a CLAUDE.md in a subdirectory is loaded when work
+				// happens there — so the one that matters is often not at the root.
+				{Project, "**/CLAUDE.md", "loaded for sessions working in its directory"},
+				{Project, "**/CLAUDE.local.md", "loaded for sessions working in its directory"},
 				{Project, ".claude/agents/*.md", "project subagent definitions"},
 				{Project, ".claude/commands/**/*.md", "project slash commands"},
-				{Project, ".claude/skills/**/SKILL.md", "project skills"},
+				{Project, ".claude/skills/**/*.md", "project skill instructions"},
+				{Project, ".claude/output-styles/*.md", "project output styles"},
 			},
 		},
 		{
@@ -192,8 +207,8 @@ func Catalog() []Agent {
 			Name:    "AGENTS.md (cross-tool convention)",
 			Markers: nil,
 			Sources: []Source{
-				{Project, "AGENTS.md", "read by several agents as this project's instructions"},
-				{Project, "AGENT.md", "read by several agents as this project's instructions"},
+				{Project, "**/AGENTS.md", "read by several agents as instructions for its directory"},
+				{Project, "**/AGENT.md", "read by several agents as instructions for its directory"},
 			},
 		},
 	}

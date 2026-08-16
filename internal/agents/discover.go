@@ -178,6 +178,22 @@ func walk(dir string, segments []string, out *[]string) {
 	}
 }
 
+// skipDirs are never descended into by a `**` walk.
+//
+// This matters most for the project-scoped `**/CLAUDE.md` patterns: a nested
+// CLAUDE.md is loaded when work happens in its directory, so the pattern has to
+// be recursive — but without this list it would walk node_modules and .git on
+// every run, which is both slow and a good way to report a vendored dependency's
+// instruction file as if it were yours.
+var skipDirs = map[string]bool{
+	".git": true, "node_modules": true, "vendor": true,
+	"dist": true, "build": true, "target": true, "out": true,
+	".venv": true, "venv": true, "site-packages": true, "__pycache__": true,
+	".next": true, ".nuxt": true, ".svelte-kit": true, ".turbo": true,
+	".gradle": true, ".terraform": true, "Pods": true, "DerivedData": true,
+	".cache": true, ".enola": true,
+}
+
 func readDirs(dir string) []string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -185,11 +201,15 @@ func readDirs(dir string) []string {
 	}
 	var out []string
 	for _, e := range entries {
+		if !e.IsDir() || skipDirs[e.Name()] {
+			continue
+		}
 		// Do not follow symlinks: an agent directory containing a link to / would
 		// otherwise turn discovery into a filesystem-wide walk.
-		if e.IsDir() && e.Type()&fs.ModeSymlink == 0 {
-			out = append(out, e.Name())
+		if e.Type()&fs.ModeSymlink != 0 {
+			continue
 		}
+		out = append(out, e.Name())
 	}
 	return out
 }

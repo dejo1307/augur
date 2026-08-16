@@ -96,10 +96,16 @@ a photo's XMP packet is found by the same code that reads a `.txt` file.
 
 `augur agents` finds the files your coding agents read as instructions and scans
 all of them. It knows the conventional locations rather than asking for paths:
-`CLAUDE.md` and `AGENTS.md`, Cursor rules, Copilot instructions, Windsurf and
-Cline rules, Codex and Gemini and OpenCode files, installed Claude Code plugin
-skills and commands, and the auto-memory that is loaded into context at the
-start of every session.
+`CLAUDE.md` and `AGENTS.md` (including nested ones, which load when work happens
+in their directory), Cursor rules, Copilot instructions, Windsurf and Cline
+rules, Codex and Gemini and OpenCode files, output styles, and the auto-memory
+loaded into context at the start of every session.
+
+Skills are covered as directories rather than as a single file. A `SKILL.md`
+routinely says "see `references/foo.md`" and the model goes and reads it, so
+every markdown file under a skill counts — along with the scripts a skill ships,
+which are not read but *run* on your behalf. On one real machine that is the
+difference between 217 files and 413.
 
 ```
 Claude Code — 219 file(s), 2 with findings

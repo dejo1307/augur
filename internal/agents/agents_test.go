@@ -245,3 +245,59 @@ func timeout(t *testing.T) <-chan struct{} {
 	}()
 	return ch
 }
+
+// A skill is a directory. Its SKILL.md says "see references/foo.md" and the
+// model goes and reads that file, so covering only SKILL.md misses most of what
+// a skill actually puts into context.
+func TestDiscoverFindsSkillSupportFiles(t *testing.T) {
+	r := roots(t)
+	skill := filepath.Join(r.Home, ".claude", "skills", "helper")
+	write(t, filepath.Join(skill, "SKILL.md"))
+	write(t, filepath.Join(skill, "references", "palette.md"))
+
+	got := paths(Discover(r))
+	if !contains(got, "helper/SKILL.md") {
+		t.Error("missed SKILL.md")
+	}
+	if !contains(got, "references/palette.md") {
+		t.Error("missed a skill's supporting reference file")
+	}
+}
+
+// A CLAUDE.md in a subdirectory is loaded when work happens there, so the one
+// that matters is often not at the root.
+func TestDiscoverFindsNestedProjectInstructions(t *testing.T) {
+	r := roots(t)
+	write(t, filepath.Join(r.Project, "services", "api", "CLAUDE.md"))
+	write(t, filepath.Join(r.Project, "packages", "web", "AGENTS.md"))
+
+	got := paths(Discover(r))
+	if !contains(got, "services/api/CLAUDE.md") {
+		t.Error("missed a nested CLAUDE.md")
+	}
+	if !contains(got, "packages/web/AGENTS.md") {
+		t.Error("missed a nested AGENTS.md")
+	}
+}
+
+// The recursive project patterns must not descend into vendored trees: it is
+// slow, and a dependency's instruction file is not yours.
+func TestDiscoverSkipsVendoredTrees(t *testing.T) {
+	r := roots(t)
+	write(t, filepath.Join(r.Project, "CLAUDE.md"))
+	for _, skip := range []string{"node_modules", ".git", "vendor", "dist", ".venv"} {
+		write(t, filepath.Join(r.Project, skip, "pkg", "CLAUDE.md"))
+	}
+
+	got := paths(Discover(r))
+	for _, p := range got {
+		for _, skip := range []string{"node_modules", ".git", "vendor", "dist", ".venv"} {
+			if strings.Contains(p, string(filepath.Separator)+skip+string(filepath.Separator)) {
+				t.Errorf("descended into %s: %s", skip, p)
+			}
+		}
+	}
+	if !contains(got, "proj/CLAUDE.md") {
+		t.Error("the project's own CLAUDE.md was lost along with the skipped trees")
+	}
+}
