@@ -25,6 +25,7 @@ usage:
   augur FILE               open FILE in the interactive viewer
   augur scan FILE [--json] report findings and exit
   augur clean FILE -o OUT  write a cleaned copy without prompting
+  augur agents             scan the instruction files your coding agents read
   augur upgrade [--check]  replace this binary with the newest release
 
 exit codes:
@@ -52,6 +53,8 @@ func main() {
 		os.Exit(cli.Scan(os.Args[2:], os.Stdout, os.Stderr))
 	case "clean":
 		os.Exit(cli.Clean(os.Args[2:], os.Stdout, os.Stderr))
+	case "agents":
+		os.Exit(cli.Agents(os.Args[2:], os.Stdout, os.Stderr))
 	case "upgrade":
 		os.Exit(cli.Upgrade(os.Args[2:], version, os.Stdout, os.Stderr))
 	default:
