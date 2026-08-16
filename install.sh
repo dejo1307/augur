@@ -1,12 +1,23 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # install.sh — install the latest augur release.
 #
-#   curl -fsSL https://raw.githubusercontent.com/dejo1307/augur/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/dejo1307/augur/main/install.sh | sh
 #
 # Installs to ~/.local/bin by default; override with AUGUR_INSTALL_DIR.
 # Set AUGUR_VERSION to pin a version instead of taking the latest.
 
-set -euo pipefail
+# POSIX sh, and `set -eu` rather than `set -euo pipefail`.
+#
+# Not a style preference. An install script published as a one-liner gets piped
+# to whatever shell the reader typed, and on Debian and Ubuntu `sh` is dash,
+# which has no `pipefail` — so a bash-only `set -o pipefail` aborts the script on
+# line 5 with "Illegal option" before it does anything. That is not hypothetical:
+# it is how enola's installer failed in this repository's own CI.
+#
+# Nothing here needs pipefail. The one pipeline that matters (resolving the
+# version) is followed by an explicit emptiness check, which is a better test
+# than an exit status anyway.
+set -eu
 
 REPO="dejo1307/augur"
 

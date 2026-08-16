@@ -14,10 +14,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -57,10 +57,10 @@ jobs:
   invariants:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
@@ -89,16 +89,16 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           # Pinned rather than `latest`: with `latest` the linter is whatever
           # shipped that morning, so an unrelated PR can go red on a new check
@@ -128,7 +128,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # merge-base needs history; a depth-1 clone has none
 
@@ -141,40 +141,29 @@ jobs:
             "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
           echo "sha=$(git merge-base HEAD "origin/${{ github.base_ref }}")" >> "$GITHUB_OUTPUT"
 
-      - name: Install enola
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/enola-labs/enola/main/install.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      # Pin the baseline from the merge base, then grade the PR head against it.
-      # Two index passes, which for a repo this size is milliseconds.
-      - name: Pin the baseline at the merge base
-        run: |
-          git checkout --quiet --detach "${{ steps.base.outputs.sha }}"
-          enola baseline pin mcp-arch.yaml
-          git checkout --quiet -
-
-      # `enola check` exit codes: 0 clean · 1 regression · 2 error · 3 declined.
-      # 2 and 3 fail the job on purpose — both mean the gate did not actually
-      # run, and a gate that passes when it could not run is worse than no gate.
-      #
-      # --min-confidence=0.8 is load-bearing and NOT a loosening. The default
-      # floor is 1.00, and a dangling code anchor verdicts at 0.80 — so
-      # `--fail-on=intent` on its own is a policy that never grades the finding
-      # it exists for. It was silently green here until that was checked against
-      # a deliberately broken anchor. `layers` is unaffected: a declared order
-      # verdicts at 1.00, and the inferred go-standard pattern enola also reports
-      # is descriptive and never graded.
-      - name: Grade the change
-        run: enola check --fail-on=layers,intent --min-confidence=0.8 mcp-arch.yaml
+      - uses: enola-labs/enola-action@v2
+        with:
+          config: mcp-arch.yaml
+          base-sha: ${{ steps.base.outputs.sha }}
+          fail-on: layers,intent
+          # Load-bearing, and NOT a loosening. The default floor is 1.00, and a
+          # dangling code anchor verdicts at 0.80 — so `fail-on: intent` on its
+          # own is a policy that never grades the finding it exists for. This
+          # gate was silently green until it was checked against a deliberately
+          # broken anchor.
+          #
+          # `layers` is unaffected: a declared order verdicts at 1.00, and the
+          # inferred go-standard pattern enola also reports is descriptive and
+          # never graded.
+          min-confidence: "0.8"
 
   vuln:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true

@@ -21,7 +21,7 @@ says exactly what it hid.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/dejo1307/augur/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/dejo1307/augur/main/install.sh | sh
 ```
 
 Installs to `~/.local/bin`. The script verifies the release checksum before it
@@ -139,7 +139,7 @@ file bytes. The layer order lives in [`enola-intent.yaml`](enola-intent.yaml) an
 is checked by [enola](https://github.com/enola-labs/enola):
 
 ```sh
-enola check --fail-on=layers,intent mcp-arch.yaml
+enola check --fail-on=layers,intent --min-confidence=0.8 mcp-arch.yaml
 ```
 
 Two policies, for two kinds of drift. **`layers`** fails a package that starts
@@ -157,7 +157,7 @@ packages. The layer order is the part it cannot check.
 
 ```sh
 go test ./...                                # includes the property tests
-enola check --fail-on=layers mcp-arch.yaml   # architecture gate
+enola check --fail-on=layers,intent --min-confidence=0.8 mcp-arch.yaml
 ```
 
 To re-record the demo (needs [VHS](https://github.com/charmbracelet/vhs) and
