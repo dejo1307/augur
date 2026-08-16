@@ -53,6 +53,10 @@ augur scan photo.jpg --json
 augur clean photo.jpg     # writes photo.clean.jpg, then verifies it
 augur clean notes.txt --categories=invisible,metadata
 
+augur scan .              # scan a whole repository
+augur scan src/ docs/     # or a few directories
+augur scan . --json       # summary, findings and blind spots, for a pipeline
+
 augur agents              # scan the instruction files your coding agents read
 augur agents --list       # show what was found, without scanning
 
@@ -61,6 +65,19 @@ augur upgrade --check     # report whether one exists; exit 1 if so, 0 if curren
 ```
 
 The original is never opened for writing. Cleaning writes a new file beside it.
+
+Pointed at a directory, augur asks git which files the repository has — so every
+`.gitignore` in the tree is honoured exactly, rather than approximately by a
+second implementation of it — and reports coverage before it reports findings:
+how many files were examined, how many nothing could look inside because no
+handler reads their format, and how many were passed over for being too large, a
+symlink or a submodule. A scan of four hundred files that says "nothing found" is
+worth nothing unless it also says how many of those four hundred were actually
+read. Directory scans report `concern` and above by default, and say how many
+findings that hid; `--min-severity=notice` lifts it. Details in
+[docs/decisions/what-a-repo-scan-looks-at.md](docs/decisions/what-a-repo-scan-looks-at.md).
+
+`clean` stays a single-file verb. See the same page for why.
 
 In the file picker: `↑↓` move, `→` open, `←` up a level, `~` home, `/` root,
 `.` toggles hidden files. In the findings view: `space` toggles one, `a` selects
