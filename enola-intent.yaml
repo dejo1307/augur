@@ -12,9 +12,12 @@
 #
 #   entrypoint     the binary. Nothing may import into it.
 #   surface        what a human or a pipeline talks to: the TUI, the CLI verbs, the
-#                  report renderers. Two of them, deliberately — a single caller never
-#                  proves an engine is separable, and the headless mode exists partly to
-#                  keep the TUI from quietly becoming the application.
+#                  report renderers, and the self-upgrader. Two callers, deliberately —
+#                  a single caller never proves an engine is separable, and the headless
+#                  mode exists partly to keep the TUI from quietly becoming the
+#                  application. `upgrade` belongs here rather than in core because it is
+#                  the implementation of a command: it knows about releases and this
+#                  machine's filesystem, and nothing beneath it may depend on either.
 #   orchestration  one package holding what a *session* is: a file loaded, its findings,
 #                  the user's selection, and the clean-then-re-verify write. Everything
 #                  stateful about "the user is looking at a file" lives here and nowhere
@@ -50,6 +53,7 @@ layers:
       - "internal/tui/**"
       - "internal/cli/**"
       - "internal/report/**"
+      - "internal/upgrade/**"
   - name: orchestration
     paths:
       - "internal/session/**"

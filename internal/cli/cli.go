@@ -7,6 +7,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/dejo1307/augur/internal/report"
 	"github.com/dejo1307/augur/internal/session"
+	"github.com/dejo1307/augur/internal/upgrade"
 	"github.com/dejo1307/augur/pkg/finding"
 )
 
@@ -140,6 +142,51 @@ func Clean(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(v.Remaining) > 0 {
 		return ExitFindings
+	}
+	return ExitClean
+}
+
+// Upgrade implements `augur upgrade [--check] [--force]`.
+func Upgrade(args []string, current string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("upgrade", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	check := fs.Bool("check", false, "report whether a newer release exists and exit, changing nothing")
+	force := fs.Bool("force", false, "re-install even when already on the latest release")
+	if err := fs.Parse(args); err != nil {
+		return ExitError
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: augur upgrade [--check] [--force]")
+		return ExitError
+	}
+
+	ctx := context.Background()
+
+	if *check {
+		res, err := upgrade.Check(ctx, current)
+		if err != nil {
+			fmt.Fprintln(stderr, "augur:", err)
+			return ExitError
+		}
+		switch {
+		case res.Dev:
+			fmt.Fprintf(stdout, "this build is %q; the latest release is v%s\n", res.Current, res.Latest)
+		case res.Newer:
+			fmt.Fprintf(stdout, "augur v%s is available (running v%s)\n", res.Latest, res.Current)
+		default:
+			fmt.Fprintf(stdout, "augur v%s is the latest release\n", res.Current)
+		}
+		// Exit 1 when something is available, so a script can branch on it —
+		// the same shape as `scan` reporting findings.
+		if res.Newer {
+			return ExitFindings
+		}
+		return ExitClean
+	}
+
+	if err := upgrade.Run(ctx, current, stdout, *force); err != nil {
+		fmt.Fprintln(stderr, "augur:", err)
+		return ExitError
 	}
 	return ExitClean
 }

@@ -33,7 +33,11 @@ Override the destination with `AUGUR_INSTALL_DIR`, or pin a version with
 Windows on amd64; [releases](https://github.com/dejo1307/augur/releases) has them
 all with checksums.
 
-With a Go toolchain (1.25.8 or newer):
+After that, `augur upgrade` keeps itself current. It verifies the release
+checksum before writing anything and swaps the binary by rename, so an
+interrupted or tampered download leaves the working one exactly where it was.
+
+With a Go toolchain (1.25.13 or newer):
 
 ```sh
 go install github.com/dejo1307/augur/cmd/augur@latest
@@ -48,6 +52,9 @@ augur scan photo.jpg      # report and exit: 0 clean, 1 findings, 2 error
 augur scan photo.jpg --json
 augur clean photo.jpg     # writes photo.clean.jpg, then verifies it
 augur clean notes.txt --categories=invisible,metadata
+
+augur upgrade             # replace this binary with the newest release
+augur upgrade --check     # report whether one exists; exit 1 if so, 0 if current
 ```
 
 The original is never opened for writing. Cleaning writes a new file beside it.
@@ -177,9 +184,11 @@ CI runs on every pull request: build, vet, gofmt, race tests with coverage, a
 separate gate for the clean/scan invariants, golangci-lint, govulncheck, and the
 architecture gate above.
 
-The Go version in `go.mod` is a floor rather than a preference: 1.25.8 is the
-first release fixing a standard-library advisory that `govulncheck` flags as
-reachable from the file picker.
+The Go version in `go.mod` is a floor rather than a preference: 1.25.13 is the
+first release fixing the standard-library advisories `govulncheck` flags as
+reachable from the file picker and from `augur upgrade`'s HTTPS calls. Adding a
+command that talks to the network moved four of them from unreachable to
+reachable, which is exactly what that gate is for.
 
 ## License
 
