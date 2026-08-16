@@ -47,12 +47,22 @@ func (t Text) Clean(orig []byte, all finding.Set, selected []finding.ID) ([]byte
 		return out, nil
 	}
 
-	sort.Slice(edits, func(i, j int) bool { return edits[i].Span.Offset < edits[j].Span.Offset })
+	// Longest first at a shared offset, so a containing edit is always seen before
+	// the edits inside it.
+	sort.Slice(edits, func(i, j int) bool {
+		if edits[i].Span.Offset != edits[j].Span.Offset {
+			return edits[i].Span.Offset < edits[j].Span.Offset
+		}
+		return edits[i].Span.Length > edits[j].Span.Length
+	})
 
+	edits = collapseContained(edits)
 	for i := 1; i < len(edits); i++ {
 		if edits[i-1].Span.Overlaps(edits[i].Span) {
-			// Two detectors claiming the same bytes is a bug in the detectors, not
-			// a condition to resolve here by picking a winner. Refuse and name both.
+			// Partial overlap: two findings each claim bytes the other does not,
+			// and there is no edit that satisfies both. That is a bug in the
+			// detectors, not a condition to resolve here by picking a winner.
+			// Refuse and name both.
 			return nil, fmt.Errorf("clean: overlapping edits %q and %q both claim bytes at %d",
 				edits[i-1].ID, edits[i].ID, edits[i].Span.Offset)
 		}
@@ -70,6 +80,34 @@ func (t Text) Clean(orig []byte, all finding.Set, selected []finding.ID) ([]byte
 		at = e.Span.End()
 	}
 	return append(out, orig[at:]...), nil
+}
+
+// collapseContained drops edits that lie entirely inside another edit, which is
+// nesting rather than conflict.
+//
+// The distinction is the point. Two findings that each claim bytes the other does
+// not are contradictory and there is no edit that honours both — that stays an
+// error. One finding inside another is not contradictory at all: a hidden `<span>`
+// with a zero-width character in its text is two true statements about the same
+// region, and deleting the span deletes the character with it. Refusing the pair
+// would mean a user who selected both got nothing removed, and a user who
+// selected them one at a time got the same file either way.
+//
+// Requires edits sorted by offset with the longest first at each offset, so the
+// container is always seen before what it contains.
+func collapseContained(edits finding.Set) finding.Set {
+	out := edits[:0]
+	end := -1
+	for _, e := range edits {
+		if e.Span.End() <= end {
+			continue // inside the previous edit, which will remove it too
+		}
+		out = append(out, e)
+		if e.Span.End() > end {
+			end = e.Span.End()
+		}
+	}
+	return out
 }
 
 // edits is the selection this cleaner owns, in no particular order.

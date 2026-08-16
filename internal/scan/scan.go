@@ -12,6 +12,8 @@ import (
 
 	"github.com/dejo1307/augur/internal/clean"
 	"github.com/dejo1307/augur/internal/detect/image"
+	"github.com/dejo1307/augur/internal/detect/ooxml"
+	"github.com/dejo1307/augur/internal/detect/pdf"
 	"github.com/dejo1307/augur/internal/detect/text"
 	"github.com/dejo1307/augur/pkg/detect"
 	"github.com/dejo1307/augur/pkg/finding"
@@ -21,14 +23,20 @@ import (
 // sorted for display afterwards — so entries are grouped by what they look for.
 func Detectors() []detect.Detector {
 	return []detect.Detector{
-		text.Hidden{},   // invisible runs, and what they decode to
-		text.Bidi{},     // direction controls
-		text.Script{},   // mixed-alphabet words
-		text.Space{},    // whitespace that is not a space
-		text.Trailing{}, // whitespace past the end of a line
-		text.Encoding{}, // BOM, invalid UTF-8
+		text.Hidden{},      // invisible runs, and what they decode to
+		text.Bidi{},        // direction controls
+		text.Control{},     // escape sequences and control characters
+		text.Script{},      // mixed-alphabet and whole-word confusable words
+		text.Styled{},      // words spelled in Unicode's alternate alphabets
+		text.Markup{},      // text the document format hides from the rendered view
+		text.Fingerprint{}, // the shape a distribution of them makes
+		text.Space{},       // whitespace that is not a space
+		text.Trailing{},    // whitespace past the end of a line
+		text.Encoding{},    // BOM, invalid UTF-8
 
 		image.Container{}, // metadata, provenance and stowaway bytes in images
+		pdf.Container{},   // document metadata, invisible text, revisions left behind
+		ooxml.Container{}, // hidden runs, tracked changes and properties in documents
 	}
 }
 
@@ -101,6 +109,10 @@ func regions(src *detect.Source) []detect.Region {
 		}}
 	case detect.JPEG, detect.PNG, detect.WebP:
 		return image.Regions(src.Bytes, src.Format)
+	case detect.PDF:
+		return pdf.Regions(src.Bytes)
+	case detect.Office:
+		return ooxml.Regions(src.Bytes)
 	}
 	return nil
 }

@@ -41,6 +41,22 @@ const (
 	// Combining is an invisible combining mark used to break up text without
 	// changing how it looks.
 	Combining
+	// Format is any other codepoint in Unicode's Cf general category: an
+	// invisible formatting control this package has nothing specific to say
+	// about. Interlinear annotation, the musical and Egyptian format controls,
+	// the Arabic number signs.
+	//
+	// It exists so that classification is a question about the character rather
+	// than a question about this package's memory. Every other class here is an
+	// enumeration, and an enumeration is a list of the blocks somebody had heard
+	// of when they wrote it — which is exactly the wrong shape for a tool whose
+	// subject is the things nobody looked for.
+	Format
+	// BlankGlyph is a codepoint that is not a format character at all — it has a
+	// glyph, and the glyph is empty. U+2800 BRAILLE PATTERN BLANK is the one that
+	// matters: it is a printing character by every property Unicode records, and
+	// it renders as a hole in the page.
+	BlankGlyph
 )
 
 func (c Class) String() string {
@@ -63,6 +79,10 @@ func (c Class) String() string {
 		return "deprecated format"
 	case Combining:
 		return "combining mark"
+	case Format:
+		return "format character"
+	case BlankGlyph:
+		return "blank glyph"
 	default:
 		return "normal"
 	}
@@ -76,7 +96,8 @@ func (c Class) String() string {
 // corrupt the decode and let two detectors claim the same bytes.
 func (c Class) Hidden() bool {
 	switch c {
-	case ZeroWidth, TagChar, VariationSelector, PrivateUse, Deprecated, Combining:
+	case ZeroWidth, TagChar, VariationSelector, PrivateUse, Deprecated, Combining,
+		Format, BlankGlyph:
 		return true
 	}
 	return false
@@ -133,6 +154,40 @@ var names = map[rune]string{
 	0xFEFF: "ZERO WIDTH NO-BREAK SPACE (BOM)",
 	0xFFA0: "HALFWIDTH HANGUL FILLER",
 
+	// Cf codepoints that the category fallback would otherwise leave unnamed.
+	// Named rather than left generic because the name is the finding: a reader
+	// who sees "INTERLINEAR ANNOTATION ANCHOR" learns that Unicode has a
+	// mechanism for carrying text that is not meant to be displayed, which is
+	// the whole point of showing it to them.
+	0x0600:  "ARABIC NUMBER SIGN",
+	0x0601:  "ARABIC SIGN SANAH",
+	0x0602:  "ARABIC FOOTNOTE MARKER",
+	0x0603:  "ARABIC SIGN SAFHA",
+	0x0604:  "ARABIC SIGN SAMVAT",
+	0x0605:  "ARABIC NUMBER MARK ABOVE",
+	0x06DD:  "ARABIC END OF AYAH",
+	0x070F:  "SYRIAC ABBREVIATION MARK",
+	0x08E2:  "ARABIC DISPUTED END OF AYAH",
+	0x110BD: "KAITHI NUMBER SIGN",
+	0x110CD: "KAITHI NUMBER SIGN ABOVE",
+	0xFFF9:  "INTERLINEAR ANNOTATION ANCHOR",
+	0xFFFA:  "INTERLINEAR ANNOTATION SEPARATOR",
+	0xFFFB:  "INTERLINEAR ANNOTATION TERMINATOR",
+	0x1BCA0: "SHORTHAND FORMAT LETTER OVERLAP",
+	0x1BCA1: "SHORTHAND FORMAT CONTINUING OVERLAP",
+	0x1BCA2: "SHORTHAND FORMAT DOWN STEP",
+	0x1BCA3: "SHORTHAND FORMAT UP STEP",
+	0x1D173: "MUSICAL SYMBOL BEGIN BEAM",
+	0x1D174: "MUSICAL SYMBOL END BEAM",
+	0x1D175: "MUSICAL SYMBOL BEGIN TIE",
+	0x1D176: "MUSICAL SYMBOL END TIE",
+	0x1D177: "MUSICAL SYMBOL BEGIN SLUR",
+	0x1D178: "MUSICAL SYMBOL END SLUR",
+	0x1D179: "MUSICAL SYMBOL BEGIN PHRASE",
+	0x1D17A: "MUSICAL SYMBOL END PHRASE",
+
+	0x2800: "BRAILLE PATTERN BLANK",
+
 	0x0009: "CHARACTER TABULATION",
 	0x00A0: "NO-BREAK SPACE",
 	0x1680: "OGHAM SPACE MARK",
@@ -184,6 +239,25 @@ func Classify(r rune) Class {
 	case 0x00A0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005,
 		0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F, 0x205F, 0x3000:
 		return ExoticSpace
+	case 0x2800:
+		// Braille pattern blank. Not a format character and not whitespace: a
+		// printing character whose glyph is empty, which is why it passes every
+		// check written against the Cf category and is a favourite for padding
+		// text out invisibly.
+		return BlankGlyph
+	}
+
+	// The fallback, and the reason the switches above are an optimisation rather
+	// than the definition. Unicode adds format characters; U+13430's block of
+	// Egyptian joiners arrived in version 12 and grew again in 15, and the
+	// interlinear annotation and musical controls have been there all along. A
+	// list would have missed every one of them until somebody noticed. The
+	// category will not.
+	switch {
+	case unicode.Is(unicode.Cf, r):
+		return Format
+	case unicode.Is(unicode.Co, r):
+		return PrivateUse
 	}
 	return Normal
 }
@@ -210,6 +284,13 @@ func Name(r rune) string {
 		return fmt.Sprintf("VARIATION SELECTOR-%d", r-0xE0100+17)
 	case PrivateUse:
 		return "PRIVATE USE CHARACTER"
+	case Format:
+		if r >= 0x13430 && r <= 0x1343F {
+			return "EGYPTIAN HIEROGLYPH FORMAT CONTROL"
+		}
+		return "FORMAT CHARACTER"
+	case BlankGlyph:
+		return "BLANK GLYPH"
 	}
 	if s := ScriptName(r); s != "" {
 		return fmt.Sprintf("%s letter", s)
@@ -239,6 +320,8 @@ func Display(r rune) string {
 		return fmt.Sprintf("⟨VS%d⟩", vsIndex(r))
 	case PrivateUse:
 		return fmt.Sprintf("⟨PUA:%04X⟩", r)
+	case Format:
+		return fmt.Sprintf("⟨Cf:%04X⟩", r)
 	case Normal:
 		return string(r)
 	default:
@@ -265,6 +348,7 @@ var mnemonics = map[rune]string{
 	0x2003: "EMSP", 0x2002: "ENSP", 0x3000: "IDSP", 0x205F: "MMSP",
 	0x2028: "LS", 0x2029: "PS", 0x3164: "HFILL", 0x115F: "HCF", 0x1160: "HJF",
 	0x2061: "FA", 0x2062: "ITIMES", 0x2063: "ISEP", 0x2064: "IPLUS",
+	0xFFF9: "IAA", 0xFFFA: "IAS", 0xFFFB: "IAT", 0x2800: "BRAILLE-BLANK",
 }
 
 // scripts are the ones that matter for mixed-script detection: the alphabets whose

@@ -16,12 +16,24 @@ import (
 type Category string
 
 const (
-	// Invisible: codepoints that render as nothing. Zero-width characters, tag
-	// characters, variation selectors, private-use area, soft hyphen.
+	// Invisible: content that is present and not shown. Codepoints that render as
+	// nothing — zero-width characters, tag characters, variation selectors,
+	// private-use area, soft hyphen — and text that a markup language hides from
+	// the rendered view while leaving it in the file for anything reading the
+	// source.
 	Invisible Category = "invisible"
 	// Bidi: direction-control codepoints, which can make source read differently
 	// than it executes (Trojan Source, CVE-2021-42574).
 	Bidi Category = "bidi"
+	// Terminal: bytes a terminal acts on instead of printing. ANSI escape
+	// sequences, and carriage returns that overwrite what was already on the line.
+	//
+	// A separate category from Invisible because the claim is a different one.
+	// Invisible says you cannot see this character. Terminal says the program you
+	// read files with will do what this says — hide the text after it, repaint the
+	// line, retitle the window, put something on your clipboard — so what `cat`
+	// showed you was never what the file contains.
+	Terminal Category = "terminal"
 	// Confusable: characters that look like other characters. Mixed-script tokens.
 	Confusable Category = "confusable"
 	// Whitespace: spaces that are not U+0020, and line/paragraph separators.
@@ -41,12 +53,19 @@ const (
 	// Steganographic: a run of hidden characters that decoded to something. This
 	// is the category that carries a recovered message rather than a count.
 	Steganographic Category = "steganographic"
+	// Fingerprint: not a character but a *distribution* of them — the same
+	// invisible codepoint recurring across a document at a cadence no editor
+	// produces. Every constituent character is reported on its own elsewhere and
+	// each one is individually unremarkable; the claim here is about the shape
+	// they make together, which is the shape of a mark identifying which copy of
+	// a document this is.
+	Fingerprint Category = "fingerprint"
 )
 
 // Categories returns every category in display order: adversarial first, ambient last.
 func Categories() []Category {
 	return []Category{
-		Steganographic, Bidi, Payload, Invisible, Confusable,
+		Steganographic, Fingerprint, Terminal, Bidi, Payload, Invisible, Confusable,
 		Metadata, Provenance, Whitespace, Encoding,
 	}
 }

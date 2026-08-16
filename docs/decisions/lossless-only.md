@@ -42,6 +42,15 @@ seeing what is in your files.
 
 - Compressed image data is copied through untouched. A cleaned JPEG's entropy-coded scan is
   byte-identical to the original's.
+- **Documents are read and never written.** PDFs and Office files are parsed in full — hidden
+  runs, invisible text, tracked changes, properties, the revisions an incremental save left
+  behind — and every finding in one is `Removable: false`. A PDF records the byte offset of
+  every object in a cross-reference table and an Office file is a deflated archive, so there is
+  no edit that removes a run without rebuilding the file around it. A rebuilt document is a
+  different file with the same contents, and the tool cannot check it against the original the
+  way it checks an edited one, which is the whole basis of
+  [verify-what-we-write](verify-what-we-write.md). Reporting without offering to fix is the
+  honest position, and it is stated in the finding rather than left to be discovered.
 - Provenance is **shown, labelled, and removable like any other container segment** — a
   C2PA manifest is metadata in a box, and a user who understands what they are removing is
   entitled to remove it. What the tool will not do is pretend a re-encode achieved something

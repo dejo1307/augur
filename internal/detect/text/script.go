@@ -12,7 +12,10 @@ import (
 	"github.com/dejo1307/augur/pkg/finding"
 )
 
-const KindMixedScript = finding.Kind("mixed-script")
+const (
+	KindMixedScript = finding.Kind("mixed-script")
+	KindWholeScript = finding.Kind("whole-script-confusable")
+)
 
 // Script finds words that mix alphabets — a Latin word with a Cyrillic "а" in it,
 // which renders identically and compares unequal.
@@ -44,6 +47,7 @@ func (d Script) Detect(src *detect.Source) (finding.Set, error) {
 
 func (d Script) scan(r detect.Region) finding.Set {
 	var out finding.Set
+	host := dominantScript(r.Text)
 	for _, w := range words(r.Text) {
 		seen := map[string][]rune{}
 		for _, c := range w.text {
@@ -51,7 +55,13 @@ func (d Script) scan(r detect.Region) finding.Set {
 				seen[s] = append(seen[s], c)
 			}
 		}
-		if len(seen) < 2 {
+		if len(seen) == 1 {
+			if f, ok := d.wholeScript(r, w, seen, host); ok {
+				out = append(out, f)
+			}
+			continue
+		}
+		if len(seen) == 0 {
 			continue
 		}
 		scripts := make([]string, 0, len(seen))
@@ -61,7 +71,11 @@ func (d Script) scan(r detect.Region) finding.Set {
 		sort.Strings(scripts)
 
 		// The odd ones out: characters from every script but the majority one.
-		major := majorityScript(seen)
+		counts := make(map[string]int, len(seen))
+		for s, rs := range seen {
+			counts[s] = len(rs)
+		}
+		major := majorityScript(counts)
 		var odd []rune
 		var names []string
 		for s, rs := range seen {
@@ -88,15 +102,72 @@ func (d Script) scan(r detect.Region) finding.Set {
 	return out
 }
 
-func majorityScript(seen map[string][]rune) string {
-	best, bestN := "", -1
-	keys := make([]string, 0, len(seen))
+// wholeScript reports a word written entirely in one non-Latin alphabet whose
+// every letter has a Latin twin — "раураӏ" — inside a document that is otherwise
+// Latin.
+//
+// This is the half of UTS #39 that mixed-script detection cannot reach. "аpple"
+// is caught by noticing two alphabets in one word and needs no table; "раураӏ" is
+// one alphabet, correctly spelled, and wrong only in relation to the document
+// around it and to a Latin word it is not. Both facts are needed, and both are
+// available here: the word, and the text it sits in.
+//
+// The host-script condition is what keeps this quiet in the documents where it
+// would otherwise be loud. In a Russian document, Cyrillic words written in
+// Cyrillic are the entire text and none of them are a substitution for anything.
+func (d Script) wholeScript(r detect.Region, w word, seen map[string][]rune, host string) (finding.Finding, bool) {
+	var script string
 	for s := range seen {
+		script = s
+	}
+	if script == "Latin" || host != "Latin" {
+		return finding.Finding{}, false
+	}
+	reading, ok := runeinfo.LatinReading(w.text)
+	if !ok {
+		return finding.Finding{}, false
+	}
+
+	names := make([]string, 0, len(w.text))
+	cps := make([]rune, 0, len(w.text))
+	for _, c := range w.text {
+		cps = append(cps, c)
+		names = append(names, runeinfo.Label(c))
+	}
+
+	span := r.Span(w.at, len(w.text))
+	return finding.New(d.Name(), KindWholeScript, finding.Confusable, finding.Alarm, span,
+		fmt.Sprintf("%q is entirely %s — it reads as %q", w.text, script, reading),
+		fmt.Sprintf("Every letter in this word is %s, and every one of them is indistinguishable "+
+			"from the Latin letter it stands in for. In a document written in Latin script "+
+			"there is nothing to see and nothing to search for: it will not match %q anywhere, "+
+			"and it is not a typo — a word does not end up in another alphabet by accident.",
+			script, reading)).
+		WithDetail(finding.NewRunes(cps, names)).
+		Irremovable("Not rewritten automatically: substituting the Latin spelling would change every character in the word, and only you can say which spelling was meant."), true
+}
+
+// dominantScript names the alphabet a stretch of text is mostly written in, which
+// is the context a single word cannot supply about itself.
+func dominantScript(s string) string {
+	counts := map[string]int{}
+	for _, r := range s {
+		if name := runeinfo.ScriptName(r); name != "" {
+			counts[name]++
+		}
+	}
+	return majorityScript(counts)
+}
+
+func majorityScript(counts map[string]int) string {
+	best, bestN := "", -1
+	keys := make([]string, 0, len(counts))
+	for s := range counts {
 		keys = append(keys, s)
 	}
 	sort.Strings(keys) // deterministic on ties
 	for _, s := range keys {
-		if n := len(seen[s]); n > bestN {
+		if n := counts[s]; n > bestN {
 			best, bestN = s, n
 		}
 	}

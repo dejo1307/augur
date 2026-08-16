@@ -26,10 +26,13 @@ func blindSpots() string {
 
 	limits := []struct{ name, why string }{
 		{
-			"Statistical watermarks in generated text",
+			"Statistical watermarks in generated text (SynthID and its kind)",
 			"Some text generators bias their word choice to a pattern only the generator's\n" +
-				"own key can recognise. Nothing is hidden in the characters, so there is\n" +
-				"nothing here to find. Only whoever holds the key can test for it.",
+				"own key can recognise. Nothing is hidden in the characters — the watermark is\n" +
+				"in which ordinary words were chosen — so there is nothing here to find, and no\n" +
+				"amount of looking at the characters will change that. Only whoever holds the\n" +
+				"key can test for it. Anything claiming to detect one by reading the text is\n" +
+				"guessing.",
 		},
 		{
 			"Watermarks carried in image pixels",
@@ -51,9 +54,24 @@ func blindSpots() string {
 				"Checking the config is not checking the server.",
 		},
 		{
+			"Documents are read, never written",
+			"PDFs and Office documents are parsed and reported in full, and nothing in one\n" +
+				"is removable. A PDF records the byte offset of every object in a table and an\n" +
+				"Office file is a compressed archive, so taking anything out means rebuilding\n" +
+				"the document rather than editing it — and a rebuilt file cannot be checked\n" +
+				"against the original the way an edited one can.",
+		},
+		{
+			"What a page would look like if it were rendered",
+			"Hidden markup is found by what the source says: an inline style, a hidden\n" +
+				"attribute, a comment. Text hidden by a rule in a separate stylesheet, or by\n" +
+				"being drawn underneath an image or off the edge of a PDF page, is invisible\n" +
+				"to a reader of the source — which is what this is.",
+		},
+		{
 			"Formats with no handler yet",
-			"PDF, Office documents, audio and video are not parsed. A file of one of those\n" +
-				"types is reported by what its raw bytes reveal and nothing more.",
+			"Audio, video, archives and fonts are not parsed. A file of one of those types\n" +
+				"is reported by what its raw bytes reveal and nothing more.",
 		},
 		{
 			"Encodings nobody has published",
