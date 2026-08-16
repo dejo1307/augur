@@ -262,6 +262,35 @@ reachable from the file picker and from `augur upgrade`'s HTTPS calls. Adding a
 command that talks to the network moved four of them from unreachable to
 reachable, which is exactly what that gate is for.
 
+## Contributing
+
+augur is only as good as its catalogue of things to look for, and that catalogue
+comes from what people meet in the wild. Two reports are worth more than any
+feature request:
+
+**A run it cannot read.** If augur reports invisible characters and will not say
+what they decode to, the encoding is one it does not know. It can reverse four
+schemes today, and every one of them was published by somebody first. Open an
+issue with the bytes.
+
+**A file it does not look at.** `augur agents` knows the conventional paths for
+thirteen tools, and those conventions move — a new rules directory, a new memory
+location, a tool that is not in the list at all. A path it misses is a file
+nobody is checking.
+
+False positives are worth reporting too. The mixed-script detector flags Greek
+beside Latin, which is an attack in a password and ordinary notation in a maths
+skill; it cannot yet tell the difference, and knowing where it gets that wrong is
+how it learns to.
+
+Adding a detector is one file under `internal/detect/` and one line in the
+registry — the layer gate exists so that stays true.
+
+If augur found something in your files you did not know was there, a star helps
+the next person find it. If it found nothing, press `?` first: a clean report
+means these detectors found nothing, which is not the same as your files being
+unmarked.
+
 ## License
 
 [Apache-2.0](LICENSE). Release archives carry `LICENSE` and `NOTICE` beside the
