@@ -4,3 +4,13 @@
 .enola/
 .DS_Store
 *.clean.*
+
+# git-stats collection archive, written here by ~/stats/check-augur.sh.
+#
+# Views, clones, referrers and the stargazer list are owner-only analytics, and
+# they include other people's names and email addresses. This repository is
+# public, so committing the archive would publish them.
+#
+# The leading slash is deliberate: an unanchored `data/` would also match a
+# demo/data/ or docs/data/ that is meant to be committed.
+/data/
