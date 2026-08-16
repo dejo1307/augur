@@ -1,6 +1,6 @@
 module github.com/dejo1307/augur
 
-go 1.25.8
+go 1.25.13
 
 require (
 	github.com/charmbracelet/bubbles v1.0.0

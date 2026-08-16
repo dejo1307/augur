@@ -51,9 +51,10 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The property tests are the load-bearing ones — they are what makes "cleaning
-  # is lossless" a checked claim rather than a sentence in the README — so they
-  # get their own gate, with the seed corpus widened well past the default.
+  # The load-bearing tests get their own gate: the property tests that make
+  # "cleaning is lossless" a checked claim rather than a sentence in the README,
+  # plus the three that stop `augur upgrade` installing bytes it did not verify.
+  # Both are promises about not damaging something the user already has.
   invariants:
     runs-on: ubuntu-latest
     steps:
@@ -69,8 +70,8 @@ jobs:
         run: |
           set -o pipefail
           go test -count=1 -v \
-            -run 'TestCleanIsIdentityOnEmptySelection|TestCleanRemovesExactlyWhatWasSelected|TestCleanIsIdempotent|TestCleanImageIsIdentityOnEmptySelection|TestVisibleTextSurvivesCleaning|TestUnselectedFindingsAreLeftAlone|TestImageCleanIsLossless|TestSaveLeavesTheOriginalAlone|TestVerificationChecksTheBytesOnDisk' \
-            ./internal/scan/ ./internal/session/ | tee invariants.log
+            -run 'TestCleanIsIdentityOnEmptySelection|TestCleanRemovesExactlyWhatWasSelected|TestCleanIsIdempotent|TestCleanImageIsIdentityOnEmptySelection|TestVisibleTextSurvivesCleaning|TestUnselectedFindingsAreLeftAlone|TestImageCleanIsLossless|TestSaveLeavesTheOriginalAlone|TestVerificationChecksTheBytesOnDisk|TestVerifyChecksumRejectsTampering|TestExtractBinaryPicksTheBinaryNotTheLicense|TestRunRefusesATamperedDownload' \
+            ./internal/scan/ ./internal/session/ ./internal/upgrade/ | tee invariants.log
 
           # `go test -run` exits 0 when the pattern matches nothing, so a typo in
           # the regex above would turn this gate green while testing nothing at
@@ -84,7 +85,7 @@ jobs:
           # has to be a deliberate edit here rather than a silent reduction.
           passed="$(grep -c '^--- PASS' invariants.log)"
           echo "invariant tests passed: $passed"
-          [ "$passed" -ge 9 ]
+          [ "$passed" -ge 12 ]
 
   lint:
     runs-on: ubuntu-latest

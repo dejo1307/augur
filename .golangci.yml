@@ -36,13 +36,20 @@ linters:
         linters:
           - errcheck
 
-      # internal/cli writes diagnostics to stderr and a final line to stdout.
-      # There is no recovery from a failed write to a terminal that is already
-      # gone, and the alternative — reporting that we could not report — is
-      # noise. Scoped to this package on purpose: report.Text does check its
-      # writes, via the errWriter in internal/report, because it renders the
-      # payload rather than a message about it.
+      # Packages that NARRATE to a terminal: diagnostics, progress lines, the
+      # "==> Downloading ..." running commentary. There is no recovery from a
+      # failed write to a terminal that is already gone, and the alternative —
+      # reporting that we could not report — is noise.
+      #
+      # The distinction being drawn, and the reason this is a path list rather
+      # than a blanket exclusion of fmt.Fprintf: a package that writes the
+      # PAYLOAD does check its writes. report.Text returns a write error through
+      # the errWriter in internal/report, because a truncated report is a wrong
+      # answer, whereas a truncated progress message is only a quiet one.
       - path: internal/cli/
+        linters:
+          - errcheck
+      - path: internal/upgrade/
         linters:
           - errcheck
 
