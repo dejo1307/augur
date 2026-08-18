@@ -269,10 +269,20 @@ func WalkWebP(data []byte) (Walk, error) {
 	return w, nil
 }
 
+// essentialWebP names the chunks the picture cannot survive without, and treats
+// everything else as removable metadata.
+//
+// It was written the other way round — a short list of known metadata chunks, and
+// everything else essential — which is the safe default until the list of things
+// that ride in a WebP grows. A C2PA chunk was landing in the essential bucket, so
+// the walker declared a provenance manifest to be part of the image and the
+// detector never saw it. Naming what the format needs is the smaller and more
+// checkable list: it comes from the WebP container specification and does not
+// grow every time somebody invents a new place to put metadata.
 func essentialWebP(kind string) bool {
 	switch kind {
-	case "EXIF", "XMP ", "ICCP":
-		return false
+	case "VP8 ", "VP8L", "VP8X", "ALPH", "ANIM", "ANMF", "FRGM":
+		return true
 	}
-	return true
+	return false
 }

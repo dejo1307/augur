@@ -564,3 +564,29 @@ func rowValue(table finding.Table, key string) string {
 	}
 	return ""
 }
+
+// TestInvalidUTF8AtTheEndOfATextDoesNotCrash: a byte that is not valid UTF-8
+// decodes to U+FFFD, which is three bytes wide while the byte that produced it is
+// one. Advancing by the rune's width rather than the byte's walked past the end of
+// the string and panicked — on a file whose only unusual property was a corrupt
+// byte, which is exactly the kind of file augur is pointed at.
+func TestInvalidUTF8AtTheEndOfATextDoesNotCrash(t *testing.T) {
+	// The file has to be mostly valid text, or the sniffer calls it binary and no
+	// text detector ever looks at it — which is how this went unnoticed.
+	prose := strings.Repeat("ordinary sentences of text. ", 8)
+	for name, src := range map[string][]byte{
+		"a bad byte at the very end":    []byte(prose + "\xff"),
+		"a bad byte after an invisible": []byte(prose + "\u200b\xff"),
+		"a bad byte in the middle":      []byte(prose + "\xffmore text\u200b here"),
+		"a truncated multi-byte rune":   []byte(prose + "\xe2\x80"),
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s: scanning panicked: %v", name, r)
+				}
+			}()
+			scan.Scan("f.txt", src)
+		}()
+	}
+}

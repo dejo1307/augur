@@ -22,6 +22,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"github.com/dejo1307/augur/internal/detect/c2pa"
 	"github.com/dejo1307/augur/pkg/detect"
 	"github.com/dejo1307/augur/pkg/finding"
 )
@@ -34,6 +35,8 @@ const (
 	KindEmbeddedFile  = finding.Kind("pdf-embedded-file")
 	KindInvisibleText = finding.Kind("pdf-invisible-text")
 	KindIncremental   = finding.Kind("pdf-incremental-update")
+	KindC2PA          = c2pa.KindManifest
+	KindC2PABroken    = c2pa.KindBroken
 	KindTrailing      = finding.Kind("pdf-trailing-bytes")
 )
 
@@ -49,6 +52,7 @@ func (d Container) Detect(src *detect.Source) (finding.Set, error) {
 
 	var out finding.Set
 	out = append(out, d.metadata(doc)...)
+	out = append(out, d.credential(doc, src.Bytes)...)
 	out = append(out, d.actions(doc)...)
 	out = append(out, d.invisibleText(doc)...)
 	out = append(out, d.structure(doc, src.Bytes)...)
@@ -100,6 +104,10 @@ func (d Container) actions(doc document) finding.Set {
 				WithDetail(finding.NewBlob(o.length, preview([]byte(o.dict), 200), "pdf object")).
 				Irremovable(irremovable))
 
+		case isCredential(o):
+			// Reported by credential() as what it is, rather than here as an
+			// anonymous attachment.
+
 		case containsAny(o.dict, "/EmbeddedFile", "/Filespec"):
 			out = append(out, finding.New(d.Name(), KindEmbeddedFile, finding.Payload, finding.Concern,
 				finding.Span{Offset: o.at, Length: o.length, Exact: true},
@@ -111,6 +119,82 @@ func (d Container) actions(doc document) finding.Set {
 		}
 	}
 	return out
+}
+
+// credential reports a Content Credential carried by the document.
+//
+// A PDF keeps one as an attachment: an embedded file stream, related to the
+// document by /AFRelationship /C2PA_Manifest. Without this it is reported as an
+// anonymous file attachment of a few tens of kilobytes, which is true and tells
+// the reader nothing — the whole content of the thing is a signed statement about
+// where the document came from.
+func (d Container) credential(doc document, file []byte) finding.Set {
+	var out finding.Set
+	for _, o := range doc.objects {
+		if !isCredential(o) {
+			continue
+		}
+		span := finding.Span{Offset: o.at, Length: o.length, Exact: true}
+		store := c2pa.TrimStore(o.stream)
+
+		// The binding's exclusions are offsets into the file, so the check needs
+		// the manifest's own position — which is where the stream sits in the
+		// file, not where the object does. A stream that had to be decompressed
+		// is not in the file verbatim; then there is no extent to give, and the
+		// binding is reported unchecked rather than checked against a guess.
+		var extents []c2pa.Extent
+		if at := bytes.Index(file, store); at >= 0 {
+			extents = append(extents, c2pa.Extent{Offset: at, Length: len(store)})
+		}
+		report := c2pa.Read(store, file, extents...)
+
+		label := fmt.Sprintf("C2PA Content Credential attached to the document (%d bytes)", len(store))
+		severity := finding.Notice
+		if summary := report.Summary(); summary != "" {
+			label += " — " + summary
+		}
+		if report.Err != nil {
+			severity = finding.Concern
+			label = fmt.Sprintf("attachment marked as a Content Credential that does not parse as one (%d bytes)", len(store))
+		}
+
+		out = append(out, finding.New(d.Name(), KindC2PA, finding.Provenance, severity, span, label,
+			"A signed record of where this document came from and what was done to it, carried "+
+				"as an attachment. Readers show it as provenance rather than as a file, and most "+
+				"show nothing at all.").
+			WithDetail(finding.NewTable("c2pa", report.Rows())).
+			Irremovable(irremovable))
+
+		if report.Mismatched() {
+			out = append(out, finding.New(d.Name(), KindC2PABroken, finding.Provenance, finding.Concern,
+				span, "the Content Credential no longer matches this document",
+				"The manifest carries a hash over the document's bytes, and they no longer hash "+
+					"to it. The document was changed after it was signed — including, for a PDF, "+
+					"by any incremental save that appended a revision.").
+				WithDetail(finding.NewTable("c2pa-binding", []finding.KV{
+					{Key: "algorithm", Value: report.Binding.Alg},
+					{Key: "claim says", Value: report.Binding.Expected},
+					{Key: "file hashes to", Value: report.Binding.Actual, Sensitive: true},
+				})).
+				Irremovable("Nothing can be removed to fix this: the mismatch is a fact about the "+
+					"document's history, not an object in it."))
+		}
+	}
+	return out
+}
+
+// isCredential recognises the attachment that carries a manifest store. The
+// relationship key is the document's own statement of what the attachment is; the
+// magic bytes are the check on that statement.
+func isCredential(o object) bool {
+	if c2pa.StoreMagic(o.stream) {
+		return true
+	}
+	// The attachment is described by one object and carried by another, and only
+	// the carrier has a stream. Without the length test the descriptor is reported
+	// too, as a credential of zero bytes that will not parse — a finding about
+	// augur's own reading rather than about the document.
+	return len(o.stream) > 0 && containsAny(o.dict, "/C2PA_Manifest", "c2pa-manifest-store")
 }
 
 // invisibleText reports text the page draws and does not show.

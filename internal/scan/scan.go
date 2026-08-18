@@ -11,6 +11,7 @@ import (
 	"fmt"
 
 	"github.com/dejo1307/augur/internal/clean"
+	"github.com/dejo1307/augur/internal/detect/c2pa"
 	"github.com/dejo1307/augur/internal/detect/image"
 	"github.com/dejo1307/augur/internal/detect/ooxml"
 	"github.com/dejo1307/augur/internal/detect/pdf"
@@ -33,6 +34,9 @@ func Detectors() []detect.Detector {
 		text.Space{},       // whitespace that is not a space
 		text.Trailing{},    // whitespace past the end of a line
 		text.Encoding{},    // BOM, invalid UTF-8
+
+		c2pa.Text{}, // Content Credentials carried in text: selectors, blocks, HTML elements
+		c2pa.SVG{},  // and in SVG, which is markup rather than a container
 
 		image.Container{}, // metadata, provenance and stowaway bytes in images
 		pdf.Container{},   // document metadata, invisible text, revisions left behind

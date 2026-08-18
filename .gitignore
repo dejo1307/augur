@@ -14,3 +14,14 @@
 # The leading slash is deliberate: an unanchored `data/` would also match a
 # demo/data/ or docs/data/ that is meant to be committed.
 /data/
+
+# The sandboxed agent workspace built by demo/make-agent-fixtures.py, and the
+# recording made from it.
+#
+# The workspace is generated rather than committed on purpose: it contains a
+# CLAUDE.md carrying a smuggled instruction, and `augur agents` walks a tree
+# rather than asking git what is in it. Committing the fixture would mean every
+# clone of this repository carried a live prompt injection for the next
+# person's agent to read.
+/demo/workspace/
+/demo/augur-showcase.mp4

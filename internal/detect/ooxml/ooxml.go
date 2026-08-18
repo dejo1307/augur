@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/dejo1307/augur/internal/detect/c2pa"
 	"github.com/dejo1307/augur/pkg/detect"
 	"github.com/dejo1307/augur/pkg/finding"
 )
@@ -33,6 +34,7 @@ const (
 	KindTrackedChange = finding.Kind("office-tracked-change")
 	KindComment       = finding.Kind("office-comment")
 	KindTrailing      = finding.Kind("office-trailing-bytes")
+	KindC2PA          = c2pa.KindManifest
 )
 
 // Container is the detector for what a document carries besides its text.
@@ -49,6 +51,7 @@ func (d Container) Detect(src *detect.Source) (finding.Set, error) {
 	}
 
 	var out finding.Set
+	out = append(out, d.credential(src.Bytes)...)
 	out = append(out, d.properties(entries)...)
 	out = append(out, d.hiddenRuns(entries)...)
 	out = append(out, d.revisions(entries)...)
@@ -88,6 +91,74 @@ var propertyTags = []struct {
 	{"meta:generator", "produced by", false},
 	{"meta:initial-creator", "author", true},
 	{"meta:editing-cycles", "times saved", false},
+}
+
+// credential reports a Content Credential carried by the archive.
+//
+// A zip-based document keeps one as a stored (uncompressed) part at
+// META-INF/content_credential.c2pa. Its hard binding is a collection hash over
+// every other part and the central directory, which is a different computation
+// from the byte-range hash augur checks — so the credential is read and reported,
+// and the binding is named rather than checked.
+func (d Container) credential(data []byte) finding.Set {
+	name, at, store, ok := credentialPart(data)
+	if !ok {
+		return nil
+	}
+	report := c2pa.Read(store, nil)
+
+	label := fmt.Sprintf("C2PA Content Credential in %s (%d bytes)", name, len(store))
+	severity := finding.Notice
+	if summary := report.Summary(); summary != "" {
+		label += " — " + summary
+	}
+	if report.Err != nil {
+		severity = finding.Concern
+		label = fmt.Sprintf("%s does not parse as a manifest store (%d bytes)", name, len(store))
+	}
+
+	return finding.Set{
+		finding.New(d.Name(), KindC2PA, finding.Provenance, severity,
+			finding.Span{Offset: at, Length: len(store), Exact: true}, label,
+			"A signed record of where this document came from and what was done to it, kept as "+
+				"a part of the archive. Nothing in the document's text shows it.").
+			WithDetail(finding.NewTable("c2pa", report.Rows())).
+			Irremovable(irremovable),
+	}
+}
+
+// credentialPart finds the manifest store inside the archive.
+//
+// The specification names one location, and the name is matched rather than
+// searched for — but the bytes are checked as well, because a part can be called
+// anything and augur reports what a thing is rather than what it is labelled.
+func credentialPart(data []byte) (name string, at int, store []byte, ok bool) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return "", 0, nil, false
+	}
+	for _, f := range zr.File {
+		named := strings.EqualFold(f.Name, "META-INF/content_credential.c2pa") ||
+			strings.HasSuffix(strings.ToLower(f.Name), ".c2pa")
+		if !named || f.UncompressedSize64 > maxPart {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			continue
+		}
+		body, err := io.ReadAll(io.LimitReader(rc, maxPart))
+		_ = rc.Close()
+		if err != nil || !c2pa.StoreMagic(body) {
+			continue
+		}
+		off, err := f.DataOffset()
+		if err != nil {
+			off = 0
+		}
+		return f.Name, int(off), c2pa.TrimStore(body), true
+	}
+	return "", 0, nil, false
 }
 
 func (d Container) properties(entries []entry) finding.Set {
