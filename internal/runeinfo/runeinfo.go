@@ -114,6 +114,23 @@ func (c Class) Invisible() bool {
 	return c.Hidden() || c == BidiControl
 }
 
+// Noun returns the singular noun phrase for a class, for prose that has to count
+// them: "3 kinds of zero-width character". String() is the label a reader sees
+// next to one codepoint and several of its values are bare adjectives, which do
+// not survive being counted.
+func (c Class) Noun() string {
+	switch c {
+	case ZeroWidth:
+		return "zero-width character"
+	case PrivateUse:
+		return "private use character"
+	case Deprecated:
+		return "deprecated format character"
+	default:
+		return c.String()
+	}
+}
+
 // names covers every codepoint this package classifies as anything but Normal,
 // excluding the block ranges handled arithmetically in Classify.
 var names = map[rune]string{

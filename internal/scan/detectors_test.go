@@ -330,6 +330,95 @@ func TestAFewStrayInvisiblesAreNotAPattern(t *testing.T) {
 	}
 }
 
+func TestRotatingExoticSpacesAreAPattern(t *testing.T) {
+	// The case that was invisible to this detector: same shape as a repeated
+	// no-break space, but the mark rotates through three of them, so counting per
+	// codepoint saw three piles of two or three and nothing crossed the line.
+	marks := []string{"\u00a0", "\u202f", "\u200a"}
+	var b strings.Builder
+	for i := 0; i < 8; i++ {
+		fmt.Fprintf(&b, "This is line %d of an ordinary looking%sdocument about quarterly results.\n",
+			i+1, marks[i%len(marks)])
+	}
+
+	res := scan.Scan("memo.txt", []byte(b.String()))
+	f := firstOfKind(t, res.Findings, text.KindFingerprint)
+	if f.Severity != finding.Alarm {
+		t.Errorf("severity = %v, want alarm: a rotation is not typesetting", f.Severity)
+	}
+	if !strings.Contains(f.Label, "8 times") || !strings.Contains(f.Label, "3 kinds") {
+		t.Errorf("label = %q, want the alphabet size and the total count", f.Label)
+	}
+}
+
+func TestRotatingZeroWidthCharactersAreAPattern(t *testing.T) {
+	marks := []string{"\u200b", "\u200c", "\u200d"}
+	var b strings.Builder
+	for i := 0; i < 9; i++ {
+		fmt.Fprintf(&b, "Revenue for region %d held flat against%sthe prior period.\n",
+			i+1, marks[i%len(marks)])
+	}
+
+	res := scan.Scan("memo.txt", []byte(b.String()))
+	f := firstOfKind(t, res.Findings, text.KindFingerprint)
+	if f.Severity != finding.Alarm {
+		t.Errorf("severity = %v, want alarm", f.Severity)
+	}
+}
+
+func TestRotationAcrossCharacterFamiliesIsAPattern(t *testing.T) {
+	// Grouping by family answers the rotation above. A mark is free to rotate
+	// across families too — a no-break space is as invisible as a zero-width one
+	// — and that has to be caught one level further up or the fix just moves
+	// where the blind spot is.
+	marks := []string{"\u200b", "\u00a0"}
+	var b strings.Builder
+	for i := 0; i < 10; i++ {
+		fmt.Fprintf(&b, "Clause %d of this agreement is binding on%sboth of the parties named.\n",
+			i+1, marks[i%len(marks)])
+	}
+
+	res := scan.Scan("contract.txt", []byte(b.String()))
+	f := firstOfKind(t, res.Findings, text.KindFingerprint)
+	if f.Severity != finding.Alarm {
+		t.Errorf("severity = %v, want alarm", f.Severity)
+	}
+	if n := countOfKind(res.Findings, text.KindFingerprint); n != 1 {
+		t.Errorf("%d fingerprint findings, want 1: the pool must not restate a family that already fired", n)
+	}
+}
+
+func TestPrivateUseIconFontIsNotAPattern(t *testing.T) {
+	// The false positive that grouping by family would otherwise invent. A shell
+	// prompt or a documentation page drawn with a glyph font carries one
+	// private-use codepoint per line, spread through the file — every signal this
+	// detector looks for. What it does not carry is repetition: eight distinct
+	// codepoints used once each is a font in use, not an alphabet spelling
+	// something out.
+	icons := []rune{0xE0B0, 0xE0A0, 0xF015, 0xF07B, 0xE62B, 0xF09B, 0xE725, 0xF120}
+	var b strings.Builder
+	for i, c := range icons {
+		fmt.Fprintf(&b, "%c  segment %d of the prompt\n", c, i)
+	}
+
+	res := scan.Scan("prompt.md", []byte(b.String()))
+	for _, f := range res.Findings {
+		if f.Kind == text.KindFingerprint {
+			t.Errorf("false positive on a glyph font: %s", f.Label)
+		}
+	}
+}
+
+func countOfKind(fs []finding.Finding, kind finding.Kind) int {
+	n := 0
+	for _, f := range fs {
+		if f.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
 // ---------------------------------------------------------------------------
 // PDF
 // ---------------------------------------------------------------------------
