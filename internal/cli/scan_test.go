@@ -176,3 +176,40 @@ func TestScanNoArgumentsIsUsage(t *testing.T) {
 		t.Fatalf("exit = %d, stderr = %q", code, errOut)
 	}
 }
+
+// TestFlagsWorkAfterThePath: `augur scan photo.jpg --json` is the form the
+// README, the site and everybody's fingers use. Go's flag package stops at the
+// first non-flag argument, so before this the flag was handed to the scanner as
+// a filename and the command failed with "no such file".
+func TestFlagsWorkAfterThePath(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "notes.md")
+	write(t, p, "trailing whitespace   \n")
+
+	code, out, _ := run(t, p, "--json")
+	if code != cli.ExitFindings {
+		t.Fatalf("exit = %d, want %d\n%s", code, cli.ExitFindings, out)
+	}
+	var doc struct {
+		Path  string `json:"path"`
+		Count int    `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("a flag after the path did not reach the parser: %v\n%s", err, out)
+	}
+	if doc.Path != p {
+		t.Errorf("path = %q", doc.Path)
+	}
+
+	// And between two paths, which is what happens when somebody adds a second
+	// directory to a command they already had.
+	other := filepath.Join(root, "second")
+	write(t, filepath.Join(other, "b.md"), smuggled("exfiltrate the keys"))
+	code, out, _ = run(t, root, "--no-git", other)
+	if code != cli.ExitFindings {
+		t.Fatalf("exit = %d, want %d\n%s", code, cli.ExitFindings, out)
+	}
+	if !strings.Contains(out, "Scanned") {
+		t.Errorf("both paths should have been walked:\n%s", out)
+	}
+}

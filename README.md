@@ -16,7 +16,9 @@ augur shows you the rest.
 Nothing in that recording is staged. The two files come from
 [`demo/make-fixtures.py`](demo/make-fixtures.py), which plants each thing augur
 then finds — so you can regenerate them and check the tool against a script that
-says exactly what it hid.
+says exactly what it hid. Including the Content Credential: it is built and
+signed by [`demo/c2pa_fixture.py`](demo/c2pa_fixture.py) rather than faked, so
+the hard binding augur checks is one the fixture really computed.
 
 ## Install
 
@@ -356,14 +358,24 @@ go test ./...                                # includes the property tests
 enola check --fail-on=layers,intent --min-confidence=0.8 mcp-arch.yaml
 ```
 
-To re-record the demo (needs [VHS](https://github.com/charmbracelet/vhs) and
-ImageMagick):
+To re-record the demo (needs [VHS](https://github.com/charmbracelet/vhs),
+ImageMagick, and openssl for the fixture's Content Credential):
 
 ```sh
 go build -o demo/augur ./cmd/augur
 python3 demo/make-fixtures.py
 vhs demo/demo.tape
+
+# VHS writes a full-colour GIF; palettising it at 15 frames a second takes a
+# fifth off the file and is indistinguishable in a terminal recording.
+ffmpeg -i docs/demo.gif -vf "fps=15,split[a][b];[a]palettegen=max_colors=64\
+  :stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4\
+  :diff_mode=rectangle" -y /tmp/demo.gif && mv /tmp/demo.gif docs/demo.gif
 ```
+
+The tape writes `demo/demo.mp4` from the same recording, which is what
+[checkwithaugur.com](https://checkwithaugur.com) plays. It is gitignored: this
+repository ships the GIF, and the site takes the video from a local run.
 
 [`demo/showcase.tape`](demo/showcase.tape) records the longer version — the
 viewer, then `augur agents`, then a repository scan — as a 1080p MP4. It needs
