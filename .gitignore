@@ -30,3 +30,5 @@
 # README loads it; the MP4 exists for checkwithaugur.com, which takes it from a
 # local run rather than from this repository.
 /demo/demo.mp4
+
+__pycache__/
