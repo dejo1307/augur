@@ -7,7 +7,8 @@ from the repository root:
 
     python3 demo/make-fixtures.py
 
-Requires ImageMagick for the base image (`magick`).
+Requires ImageMagick for the base image (`magick`) and openssl for the Content
+Credential (`demo/c2pa_fixture.py` builds and signs a real one).
 """
 
 import io
@@ -15,6 +16,9 @@ import os
 import struct
 import subprocess
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import c2pa_fixture  # noqa: E402  (the module sits beside this script)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -144,22 +148,24 @@ def write_photo(path: str) -> None:
 
     xmp = jpeg_marker(0xE1, b"http://ns.adobe.com/xap/1.0/\x00" + xmp_body)
     comment = jpeg_marker(0xFE, b"internal build 7719 -- do not distribute")
-    c2pa = jpeg_marker(
-        0xEB,
-        b"jumb\x00c2pa.assertions\x00c2pa.actions\x00urn:uuid:8f4c1e2b" + b"\x00" * 900,
-    )
 
     out = (
         base[:2]
         + build_exif_app1()
         + xmp
         + comment
-        + c2pa
         + base[2:]
         + b"PK\x03\x04"          # a zip archive stapled past the end of the image
         + b"STOWAWAY" * 40
     )
-    open(path, "wb").write(out)
+
+    # The Content Credential goes in last and is signed over everything above,
+    # so its hard binding matches the file as written. That is the arrangement
+    # worth demonstrating: a credential can be perfectly intact on a photo that
+    # is also carrying GPS, a smuggled instruction and a stapled archive.
+    # Provenance says where a file came from, not that it is safe.
+    at = 2 + len(build_exif_app1()) + len(xmp) + len(comment)
+    open(path, "wb").write(c2pa_fixture.sign_jpeg(out, at=at))
 
 
 def main() -> int:

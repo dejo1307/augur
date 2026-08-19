@@ -25,3 +25,8 @@
 # person's agent to read.
 /demo/workspace/
 /demo/augur-showcase.mp4
+
+# The video render of the README recording. The GIF is committed because the
+# README loads it; the MP4 exists for checkwithaugur.com, which takes it from a
+# local run rather than from this repository.
+/demo/demo.mp4

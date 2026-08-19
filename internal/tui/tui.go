@@ -595,7 +595,10 @@ func (m Model) viewSaved() string {
 func renderDetail(f finding.Finding, width int) string {
 	var b strings.Builder
 
-	b.WriteString(styTitle.Render(f.Label))
+	// The label is wrapped rather than clipped: a finding whose label carries the
+	// answer — which generator, which source type — should not lose it to the
+	// panel edge.
+	b.WriteString(styTitle.Render(wrap(f.Label, width)))
 	b.WriteString("\n")
 	b.WriteString(severityStyle(f.Severity).Render(strings.ToUpper(f.Severity.String())))
 	b.WriteString(styFaint.Render(fmt.Sprintf("  ·  %s  ·  found by %s", f.Category, f.Detector)))
@@ -644,12 +647,23 @@ func renderDetail(f finding.Finding, width int) string {
 		b.WriteString(styTitle.Render(strings.ToUpper(d.Source)))
 		b.WriteString("\n\n")
 		for _, kv := range d.Rows {
-			key := styFaint.Render(kv.Key + ": ")
-			val := kv.Value
-			if kv.Sensitive {
-				val = styWarn.Render(val)
+			// Values wrap under their key rather than running off the edge of the
+			// panel. A Content Credential's rows are sentences — "matches: the
+			// file still hashes to what was signed" — and a row cut mid-clause is
+			// the one place in this viewer where the answer was on screen and
+			// unreadable.
+			const indent = "  "
+			key := lipgloss.Width(kv.Key) + 2 // the key, its colon and a space
+			for i, line := range strings.Split(wrap(kv.Value, width-key-len(indent)), "\n") {
+				if kv.Sensitive {
+					line = styWarn.Render(line)
+				}
+				if i == 0 {
+					b.WriteString(indent + styFaint.Render(kv.Key+": ") + line + "\n")
+					continue
+				}
+				b.WriteString(indent + strings.Repeat(" ", key) + line + "\n")
 			}
-			b.WriteString("  " + key + val + "\n")
 		}
 
 	case finding.Blob:
@@ -728,6 +742,15 @@ func hexPreview(b []byte, max int) string {
 	return sb.String()
 }
 
+// wrap folds text to a column width, measuring what a terminal will actually
+// draw rather than counting characters.
+//
+// Two things it has to get right, both of which it used not to. A character is
+// not a column: CJK and emoji occupy two, so counting runes overflows the panel
+// by up to a factor of two on exactly the text this tool exists to look at. And
+// a word longer than the line has to be broken rather than emitted whole — a
+// manifest URL, a document ID, a hash — because a line the panel cannot hold is
+// a line the panel silently cuts, and the cut lands wherever it lands.
 func wrap(s string, width int) string {
 	if width < 12 {
 		width = 12
@@ -736,31 +759,68 @@ func wrap(s string, width int) string {
 	for _, para := range strings.Split(s, "\n") {
 		line := ""
 		for _, word := range strings.Fields(para) {
-			if line == "" {
-				line = word
+			// A word that cannot fit on a line of its own is broken up first,
+			// and its pieces are lines rather than words: joining them with a
+			// space would insert a space that is not in the text.
+			if lipgloss.Width(word) > width {
+				if line != "" {
+					out = append(out, line)
+				}
+				pieces := breakWord(word, width)
+				out = append(out, pieces[:len(pieces)-1]...)
+				line = pieces[len(pieces)-1]
 				continue
 			}
-			if len([]rune(line))+1+len([]rune(word)) > width {
+			switch {
+			case line == "":
+				line = word
+			case lipgloss.Width(line)+1+lipgloss.Width(word) > width:
 				out = append(out, line)
 				line = word
-				continue
+			default:
+				line += " " + word
 			}
-			line += " " + word
 		}
 		out = append(out, line)
 	}
 	return strings.Join(out, "\n")
 }
 
+// breakWord splits a word into pieces that each fit the width. Every piece is at
+// least one character, so a width narrower than a single wide character still
+// terminates — it overflows by one column rather than looping forever.
+func breakWord(word string, width int) []string {
+	var pieces []string
+	current := ""
+	for _, r := range word {
+		if current != "" && lipgloss.Width(current)+lipgloss.Width(string(r)) > width {
+			pieces = append(pieces, current)
+			current = ""
+		}
+		current += string(r)
+	}
+	return append(pieces, current)
+}
+
+// truncate cuts a string to fit n columns, ending in an ellipsis when it had to
+// cut. Columns rather than characters, for the same reason wrap counts them: a
+// list of findings about CJK text was overflowing its pane by up to double,
+// pushing the detail panel off the side of the terminal.
 func truncate(s string, n int) string {
 	if n < 4 {
 		n = 4
 	}
-	r := []rune(s)
-	if len(r) <= n {
+	if lipgloss.Width(s) <= n {
 		return s
 	}
-	return string(r[:n-1]) + "…"
+	out := ""
+	for _, r := range s {
+		if lipgloss.Width(out)+lipgloss.Width(string(r))+1 > n {
+			break
+		}
+		out += string(r)
+	}
+	return out + "…"
 }
 
 func humanBytes(n int) string {

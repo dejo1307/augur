@@ -32,6 +32,32 @@ const (
 	ExitError    = 2 // could not read or parse the file
 )
 
+// parseAnywhere parses flags that may appear before, after or between the paths,
+// and returns the paths.
+//
+// Go's flag package stops at the first argument that is not a flag, so
+// `augur scan photo.jpg --json` hands `--json` to the scanner as a filename and
+// reports that no such file exists. Every form documented in the README and on
+// the site does that, which makes this a bug in the tool rather than in the
+// documentation: nobody types the flags first because nothing else requires it.
+//
+// The loop is the standard way round it — parse, take the first operand, parse
+// what is left — and it keeps flags with separate values (`-o out.jpg`) working,
+// because those are still consumed in flag position.
+func parseAnywhere(fs *flag.FlagSet, args []string) ([]string, error) {
+	var operands []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return operands, nil
+		}
+		operands = append(operands, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
 // Scan implements `augur scan PATH... [--json] [--min-severity=...]`.
 //
 // One file is one question and the report answers it in full. A directory is a
@@ -50,18 +76,19 @@ func Scan(args []string, stdout, stderr io.Writer) int {
 	maxSize := fs.Int64("max-size", walk.DefaultMaxSize, "when walking a directory, skip files larger than this many bytes")
 	noGit := fs.Bool("no-git", false, "walk the filesystem instead of asking git which files the repository has")
 	maxFiles := fs.Int("max-files", 20, "how many flagged files the text report details (0 for all)")
-	if err := fs.Parse(args); err != nil {
+	paths, err := parseAnywhere(fs, args)
+	if err != nil {
 		return ExitError
 	}
-	if fs.NArg() == 0 {
+	if len(paths) == 0 {
 		fmt.Fprintln(stderr, "usage: augur scan PATH... [--json] [--min-severity=notice|concern|alarm]")
 		return ExitError
 	}
 
-	if fs.NArg() == 1 && isRegularFile(fs.Arg(0)) {
-		return scanFile(fs.Arg(0), *minSev, *asJSON, stdout, stderr)
+	if len(paths) == 1 && isRegularFile(paths[0]) {
+		return scanFile(paths[0], *minSev, *asJSON, stdout, stderr)
 	}
-	return scanTree(fs.Args(), treeOptions{
+	return scanTree(paths, treeOptions{
 		minSev:   *minSev,
 		asJSON:   *asJSON,
 		maxSize:  *maxSize,
@@ -283,15 +310,16 @@ func Clean(args []string, stdout, stderr io.Writer) int {
 	out := fs.String("o", "", "destination (default: alongside the original, with .clean before the extension)")
 	cats := fs.String("categories", "", "only remove these categories, comma-separated (default: everything removable)")
 	force := fs.Bool("force", false, "overwrite the destination if it exists")
-	if err := fs.Parse(args); err != nil {
+	paths, err := parseAnywhere(fs, args)
+	if err != nil {
 		return ExitError
 	}
-	if fs.NArg() != 1 {
+	if len(paths) != 1 {
 		fmt.Fprintln(stderr, "usage: augur clean FILE [-o OUT] [--categories=invisible,metadata] [--force]")
 		return ExitError
 	}
 
-	s, err := session.Open(fs.Arg(0))
+	s, err := session.Open(paths[0])
 	if err != nil {
 		fmt.Fprintln(stderr, "augur:", err)
 		return ExitError

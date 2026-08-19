@@ -65,8 +65,8 @@ func Text(w io.Writer, path string, format string, set finding.Set) error {
 				mark = "*"
 			}
 			e.printf(" %s [%s] offset %d — %s\n", mark, f.Severity, f.Span.Offset, f.Label)
-			if d := detailLine(f); d != "" {
-				e.printf("       %s\n", d)
+			for _, line := range detailLines(f) {
+				e.printf("       %s\n", line)
 			}
 		}
 	}
@@ -76,9 +76,36 @@ func Text(w io.Writer, path string, format string, set finding.Set) error {
 	return e.err
 }
 
-// detailLine renders a finding's evidence as one line. The decoded message gets
-// pride of place: it is the only thing in a report that a reader will act on
-// immediately.
+// detailLines renders a finding's evidence. Most evidence is one line — the
+// decoded message gets pride of place, because it is the only thing in a report
+// a reader acts on immediately — but a table gets a line per row.
+//
+// It used to be one line for everything, with the rows joined by commas and cut
+// at 120 characters. That was fine while a table meant EXIF, where the first few
+// fields carry the finding. It stopped being fine when a table started carrying a
+// Content Credential: what the credential says and whether it still matches the
+// file were landing past the cut, so the report showed the label and hid the
+// answer.
+func detailLines(f finding.Finding) []string {
+	if table, ok := f.Detail.(finding.Table); ok {
+		const most = 10
+		var out []string
+		for i, r := range table.Rows {
+			if i == most {
+				out = append(out, fmt.Sprintf("… and %d more", len(table.Rows)-most))
+				break
+			}
+			out = append(out, r.Key+"="+truncate(r.Value, 160))
+		}
+		return out
+	}
+	if line := detailLine(f); line != "" {
+		return []string{line}
+	}
+	return nil
+}
+
+// detailLine renders the evidence that fits on one line.
 func detailLine(f finding.Finding) string {
 	switch d := f.Detail.(type) {
 	case finding.Decoded:
@@ -91,12 +118,6 @@ func detailLine(f finding.Finding) string {
 			return ""
 		}
 		return "in context: " + truncate(Visible(d.Context), 100)
-	case finding.Table:
-		parts := make([]string, 0, len(d.Rows))
-		for _, r := range d.Rows {
-			parts = append(parts, r.Key+"="+r.Value)
-		}
-		return truncate(strings.Join(parts, ", "), 120)
 	case finding.Blob:
 		if d.Sniffed != "" {
 			return fmt.Sprintf("%d bytes, looks like %s", d.Size, d.Sniffed)
