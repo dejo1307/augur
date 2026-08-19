@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/dejo1307/augur/internal/detect/c2pa"
 	"github.com/dejo1307/augur/pkg/detect"
 	"github.com/dejo1307/augur/pkg/finding"
 )
@@ -19,6 +20,7 @@ const (
 	KindComment    = finding.Kind("comment")
 	KindPNGText    = finding.Kind("png-text")
 	KindC2PA       = finding.Kind("c2pa-manifest")
+	KindC2PABroken = finding.Kind("c2pa-binding-mismatch")
 	KindTrailing   = finding.Kind("trailing-bytes")
 	KindUnknownApp = finding.Kind("unknown-segment")
 )
@@ -55,15 +57,18 @@ func (d Container) Detect(src *detect.Source) (finding.Set, error) {
 		return nil, err
 	}
 
+	// A Content Credential is the one thing here that is not read block by block:
+	// a manifest store larger than a JPEG segment is split across several, and
+	// what it says can only be read once they are back together.
+	credential, store, rest := splitCredential(w.Blocks, src.Format)
+
 	var out finding.Set
-	for _, b := range w.Blocks {
-		if b.Essential {
-			continue
-		}
+	for _, b := range rest {
 		if f, ok := d.describe(b, src.Format); ok {
 			out = append(out, f)
 		}
 	}
+	out = append(out, d.credential(credential, store, src)...)
 
 	if len(w.Trailing) > 0 {
 		out = append(out, finding.New(d.Name(), KindTrailing, finding.Payload, finding.Alarm,
@@ -86,14 +91,6 @@ func (d Container) describe(b Block, format detect.Format) (finding.Finding, boo
 	}
 
 	switch {
-	case isC2PA(b):
-		return mk(KindC2PA, finding.Provenance, finding.Notice,
-			fmt.Sprintf("C2PA provenance manifest (%s)", humanBytes(b.Length)),
-			"A signed record of where this image came from and what was done to it. It is "+
-				"metadata like any other block here and can be removed — but unlike the rest, "+
-				"removing it takes away evidence rather than exposure.",
-		).WithDetail(finding.NewTable("c2pa", c2paRows(b))), true
-
 	case isEXIF(b, format):
 		rows := exifRows(exifTIFF(b, format))
 		sev := finding.Notice
@@ -215,18 +212,25 @@ func isICC(b Block, f detect.Format) bool {
 	return false
 }
 
-// isC2PA recognises a Content Credentials manifest. It rides in a JUMBF box, which
-// is APP11 in JPEG and the caBX chunk in PNG.
+// isC2PA recognises a Content Credential. It rides in a JUMBF box, which is APP11
+// in JPEG, the caBX chunk in PNG, and a RIFF chunk called C2PA in WebP.
+//
+// The WebP case is not a completeness exercise. Content Credentials are being
+// attached to generated images today, WebP is one of the formats they are
+// generated in, and a chunk augur walks past is a provenance manifest it reports
+// as absent.
 func isC2PA(b Block) bool {
-	if b.Kind == "caBX" {
+	switch b.Kind {
+	case "caBX", "C2PA":
 		return true
+	case "APP11":
+		// JUMBF boxes carry a "jumb" type; the C2PA store labels itself. A
+		// continuation segment repeats the same framing, which is why this
+		// matches the later segments of a split store too.
+		return bytes.Contains(b.Payload, []byte("jumb")) &&
+			(bytes.Contains(b.Payload, []byte("c2pa")) || bytes.Contains(b.Payload, []byte("cai")))
 	}
-	if b.Kind != "APP11" {
-		return false
-	}
-	// JUMBF boxes carry a "jumb" type; the C2PA store labels itself.
-	return bytes.Contains(b.Payload, []byte("jumb")) &&
-		(bytes.Contains(b.Payload, []byte("c2pa")) || bytes.Contains(b.Payload, []byte("cai")))
+	return false
 }
 
 func isPNGText(kind string) bool {
@@ -265,14 +269,129 @@ func pngText(b Block) (string, string) {
 	}
 }
 
-func c2paRows(b Block) []finding.KV {
-	rows := []finding.KV{{Key: "size", Value: humanBytes(b.Length)}}
-	for _, claim := range []string{"c2pa.actions", "c2pa.hash", "urn:uuid", "adobe", "openai", "google"} {
-		if bytes.Contains(bytes.ToLower(b.Payload), []byte(claim)) {
-			rows = append(rows, finding.KV{Key: "mentions", Value: claim})
-		}
+// credential reads the Content Credential carried by these blocks and reports it.
+//
+// Two findings can come out of it. The manifest itself is one, reported neutrally
+// and removable like any other metadata block. The other is the answer to the
+// question a signed manifest invites and nothing else in a file can settle: does
+// the file still match what was signed?
+func (d Container) credential(blocks []Block, store []byte, src *detect.Source) finding.Set {
+	if len(blocks) == 0 {
+		return nil
 	}
-	return rows
+
+	extents := make([]c2pa.Extent, 0, len(blocks))
+	total := 0
+	for _, b := range blocks {
+		extents = append(extents, c2pa.Extent{Offset: b.Offset, Length: b.Length})
+		total += b.Length
+	}
+	report := c2pa.Read(store, src.Bytes, extents...)
+
+	span := finding.Span{Offset: blocks[0].Offset, Length: blocks[0].Length, Exact: true}
+	label := fmt.Sprintf("C2PA Content Credential (%s)", humanBytes(total))
+	severity := finding.Notice
+	if summary := report.Summary(); summary != "" {
+		label += " — " + summary
+	}
+	if report.Err != nil {
+		// A block that announces itself as a Content Credential and then will not
+		// parse as one is not a credential; it is an opaque payload wearing the
+		// label of something viewers skip.
+		severity = finding.Concern
+		label = fmt.Sprintf("C2PA block that does not parse as a manifest (%s)", humanBytes(total))
+	}
+
+	out := finding.Set{
+		finding.New(d.Name(), KindC2PA, finding.Provenance, severity, span, label,
+			"A signed record of where this image came from and what was done to it. It is "+
+				"metadata like any other block here and can be removed — but unlike the rest, "+
+				"removing it takes away evidence rather than exposure.",
+		).WithDetail(finding.NewTable("c2pa", report.Rows())).Deletable(),
+	}
+
+	// The store's later segments are the same manifest continued. They are
+	// reported so that removing the credential removes all of it — a JPEG left
+	// holding segments two and three of a manifest whose first segment is gone
+	// carries a fragment nothing can read.
+	for i, b := range blocks[1:] {
+		out = append(out, finding.New(d.Name(), KindC2PA, finding.Provenance, finding.Notice,
+			finding.Span{Offset: b.Offset, Length: b.Length, Exact: true},
+			fmt.Sprintf("C2PA Content Credential, continued (part %d of %d, %s)",
+				i+2, len(blocks), humanBytes(b.Length)),
+			"The rest of the manifest above. A manifest store larger than one segment is "+
+				"split across several, and they are removed together or not at all.",
+		).Deletable())
+	}
+
+	if report.Mismatched() {
+		out = append(out, finding.New(d.Name(), KindC2PABroken, finding.Provenance, finding.Concern,
+			span,
+			"the Content Credential no longer matches this file",
+			"The manifest carries a hash over the file's bytes, and they no longer hash to it. "+
+				"The file was changed after it was signed — by an edit, a re-save, a metadata "+
+				"strip, or anything else that rewrote a byte the claim covered. The credential "+
+				"still describes the file it was made for; this is no longer that file.",
+		).WithDetail(finding.NewTable("c2pa-binding", []finding.KV{
+			{Key: "algorithm", Value: report.Binding.Alg},
+			{Key: "claim says", Value: report.Binding.Expected},
+			{Key: "file hashes to", Value: report.Binding.Actual, Sensitive: true},
+		})).Irremovable("Nothing can be removed to fix this: the mismatch is a fact about the "+
+			"file's history, not a block in it."))
+	}
+	return out
+}
+
+// splitCredential separates the blocks carrying a Content Credential from the
+// rest, and recovers the manifest store they hold.
+//
+// PNG and WebP keep the whole store in one chunk, so the split is a test on each
+// block. JPEG splits it across segments that each repeat eight bytes of framing
+// and only the first of which is recognisable, so the reassembly decides which
+// segments were part of it — and any APP11 that was not is handed back to be
+// reported as the unknown segment it is.
+func splitCredential(blocks []Block, format detect.Format) (credential []Block, store []byte, rest []Block) {
+	if format == detect.JPEG {
+		var app11 []Block
+		var payloads [][]byte
+		for _, b := range blocks {
+			if b.Essential {
+				continue
+			}
+			if b.Kind == "APP11" {
+				app11 = append(app11, b)
+				payloads = append(payloads, b.Payload)
+				continue
+			}
+			rest = append(rest, b)
+		}
+		joined, used := c2pa.JoinJPEGSegments(payloads)
+		inStore := make(map[int]bool, len(used))
+		for _, i := range used {
+			inStore[i] = true
+		}
+		for i, b := range app11 {
+			if inStore[i] {
+				credential = append(credential, b)
+				continue
+			}
+			rest = append(rest, b)
+		}
+		return credential, c2pa.FixJPEGStoreLength(joined), rest
+	}
+
+	for _, b := range blocks {
+		if b.Essential {
+			continue
+		}
+		if len(credential) == 0 && isC2PA(b) {
+			credential = append(credential, b)
+			store = b.Payload
+			continue
+		}
+		rest = append(rest, b)
+	}
+	return credential, store, rest
 }
 
 // xmpRows pulls the handful of XMP fields worth naming. A full XML parse is not

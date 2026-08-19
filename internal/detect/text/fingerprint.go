@@ -188,8 +188,19 @@ func doingItsJob(c rune, s string, i int) bool {
 
 // nextIsHidden reports whether the codepoint after the one at i is also hidden,
 // which is what makes this occurrence part of a run rather than a lone mark.
-func nextIsHidden(s string, i int, cur rune) bool {
-	for _, r := range s[i+utf8.RuneLen(cur):] {
+//
+// The width comes from decoding the string rather than from the rune, and that is
+// not a style preference. Ranging over a string yields U+FFFD for a byte that is
+// not valid UTF-8, and U+FFFD is three bytes wide while the byte that produced it
+// is one — so advancing by the rune's width walks past the end of the string. A
+// region carrying invalid UTF-8 is exactly the kind of input this tool is pointed
+// at, and it crashed the scan.
+func nextIsHidden(s string, i int, _ rune) bool {
+	_, size := utf8.DecodeRuneInString(s[i:])
+	if size <= 0 || i+size >= len(s) {
+		return false
+	}
+	for _, r := range s[i+size:] {
 		return runeinfo.Classify(r).Hidden()
 	}
 	return false

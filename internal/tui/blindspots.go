@@ -32,7 +32,25 @@ func blindSpots() string {
 				"in which ordinary words were chosen — so there is nothing here to find, and no\n" +
 				"amount of looking at the characters will change that. Only whoever holds the\n" +
 				"key can test for it. Anything claiming to detect one by reading the text is\n" +
-				"guessing.",
+				"guessing.\n" +
+				"A Content Credential is the opposite case and augur does read those: it is\n" +
+				"characters, in the file, saying what made it — see the provenance findings.",
+		},
+		{
+			"Whether a signature or a certificate is genuine",
+			"A Content Credential is signed, and augur reads the certificate and prints who\n" +
+				"it says signed. It does not verify the signature and does not check the\n" +
+				"certificate against any trust list, because it ships with none — so \"signed\n" +
+				"by\" means \"this file says so\", not \"this was checked\". The one part of a\n" +
+				"credential augur does verify for itself is the hard binding: whether the file\n" +
+				"still hashes to what the claim covered. That needs no key and no network.",
+		},
+		{
+			"A credential kept somewhere other than the file",
+			"A file can point at its manifest instead of carrying it — a URL in a comment, a\n" +
+				"link element, a sidecar. augur reports the pointer and does not follow it:\n" +
+				"this tool reads the bytes it was given and makes no network requests, which\n" +
+				"is a property worth more than the extra coverage would be.",
 		},
 		{
 			"Watermarks carried in image pixels",
