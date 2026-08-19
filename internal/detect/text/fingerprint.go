@@ -57,14 +57,63 @@ func (d Fingerprint) Detect(src *detect.Source) (finding.Set, error) {
 	return out, nil
 }
 
-// spread is where one codepoint turned up.
+// spread is where a family of codepoints turned up.
+//
+// Keyed by family rather than by codepoint, and that is the whole of the fix for
+// the case this detector was blind to. A mark that varies which character it uses
+// — which is how you carry more than one bit per position — divides its own
+// evidence between codepoints, and a threshold applied to each one separately
+// then sees several small piles instead of one mark. Alternation is what makes a
+// distribution *more* obviously deliberate, not less; counting it per codepoint
+// inverted that.
 type spread struct {
 	offsets []int
-	lines   map[int]int // line number -> occurrences on it
+	lines   map[int]int  // line number -> occurrences on it
+	runes   map[rune]int // codepoint -> occurrences of it
+	spaces  int          // of the offsets, how many are exotic spaces
+}
+
+func newSpread() *spread {
+	return &spread{lines: map[int]int{}, runes: map[rune]int{}}
+}
+
+func (s *spread) add(c rune, class runeinfo.Class, offset, line int) {
+	s.offsets = append(s.offsets, offset)
+	s.lines[line]++
+	s.runes[c]++
+	if class == runeinfo.ExoticSpace {
+		s.spaces++
+	}
+}
+
+// alphabet returns the distinct codepoints in the spread, in codepoint order.
+func (s *spread) alphabet() []rune {
+	out := make([]rune, 0, len(s.runes))
+	for r := range s.runes {
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// big reports whether the spread is long enough and wide enough to be a mark at
+// all, and whether its codepoints *repeat*.
+//
+// The repetition test is what keeps grouping by family from inventing findings.
+// A mark reuses a small alphabet: that is what an alphabet is for. Eight distinct
+// private-use codepoints, one to a line, is not a mark repeating itself — it is a
+// glyph font being used, which is what a shell prompt or a documentation page
+// with icons in it looks like from here, and those were silent before this
+// detector learned to group.
+func (s *spread) big() bool {
+	return len(s.offsets) >= minOccurrences &&
+		len(s.lines) >= minLines &&
+		len(s.offsets) >= 2*len(s.runes)
 }
 
 func (d Fingerprint) scan(r detect.Region) finding.Set {
-	spreads := map[rune]*spread{}
+	byClass := map[runeinfo.Class]*spread{}
+	pooled := newSpread()
 	line := 0
 	spaces := 0
 
@@ -97,71 +146,144 @@ func (d Fingerprint) scan(r detect.Region) finding.Set {
 			continue
 		}
 
-		s := spreads[c]
+		s := byClass[class]
 		if s == nil {
-			s = &spread{lines: map[int]int{}}
-			spreads[c] = s
+			s = newSpread()
+			byClass[class] = s
 		}
-		s.offsets = append(s.offsets, i)
-		s.lines[line]++
+		s.add(c, class, i, line)
+		pooled.add(c, class, i, line)
 	}
 
 	var out finding.Set
-	for _, c := range sortedRunes(spreads) {
-		s := spreads[c]
-		if len(s.offsets) < minOccurrences || len(s.lines) < minLines {
-			continue
+	for _, class := range sortedClasses(byClass) {
+		if f, ok := d.report(r, class, byClass[class], spaces); ok {
+			out = append(out, f)
 		}
-		if f, ok := d.report(r, c, s, spaces); ok {
+	}
+	if len(out) > 0 {
+		return out
+	}
+
+	// Nothing tripped one family, so ask the question one level up: a mark is
+	// free to mix a no-break space into a run of zero-width spaces, and doing so
+	// defeats grouping by family for exactly the reason grouping by codepoint was
+	// defeated. This only runs when every family was individually quiet — if one
+	// already fired, the reader knows the document is marked and restating the
+	// same characters pooled together is noise.
+	if len(pooled.runes) > 1 {
+		if f, ok := d.report(r, runeinfo.Normal, pooled, spaces); ok {
 			out = append(out, f)
 		}
 	}
 	return out
 }
 
-func (d Fingerprint) report(r detect.Region, c rune, s *spread, spaces int) (finding.Finding, bool) {
-	class := runeinfo.Classify(c)
+// report turns a spread into a finding. class is the family the spread belongs
+// to, or runeinfo.Normal for the cross-family pool, which has no single family to
+// name.
+func (d Fingerprint) report(r detect.Region, class runeinfo.Class, s *spread, spaces int) (finding.Finding, bool) {
+	if !s.big() {
+		return finding.Finding{}, false
+	}
+	alphabet := s.alphabet()
 
-	sev := finding.Alarm
-	why := "A character that renders as nothing, repeated across the document at a cadence " +
-		"no editor produces. Individually each one is deniable and this tool reports each one " +
-		"as a notice; together they are a pattern, and a pattern of invisible characters " +
-		"through a document is how a copy is marked so that a leak can be traced to whoever " +
-		"received it."
-	if class == runeinfo.ExoticSpace {
-		// Typography does this legitimately and constantly — French spacing puts a
-		// narrow no-break space before half the punctuation in the language — so
-		// this half of the finding explains rather than accuses.
-		sev = finding.Concern
-		why = "A space that is not an ordinary space, used repeatedly through the document. " +
-			"Typesetting does this on purpose, and so does fingerprinting: a particular " +
-			"pattern of unusual spaces identifies which copy of a document a leak came from, " +
-			"survives reformatting, and is invisible to the reader either way."
-		if spaces > 0 && len(s.offsets)*4 > spaces {
-			// Not sparse: this is how the document is typeset, not a mark hidden
-			// among ordinary spaces.
-			return finding.Finding{}, false
-		}
+	// Typesetting produces exotic spaces legitimately and constantly, so the
+	// sparse test asks whether these are hiding among ordinary spaces or are
+	// simply how the document is spaced. Measured over the exotic spaces in the
+	// spread rather than over all of it: in the cross-family pool the zero-width
+	// characters are not the ones typesetting can explain, and letting them count
+	// towards a typesetting quota would let a heavily spaced document argue its
+	// way out of a mark it did not produce.
+	if s.spaces == len(s.offsets) && spaces > 0 && s.spaces*4 > spaces {
+		return finding.Finding{}, false
 	}
 
-	perLine := "about one per line"
-	if densest := maxPerLine(s.lines); densest > 1 {
-		perLine = fmt.Sprintf("up to %d per line", densest)
-	}
+	sev, label, why := d.describe(class, s, alphabet)
 
 	span := r.Span(s.offsets[0], 0)
-	return finding.New(d.Name(), KindFingerprint, finding.Fingerprint, sev, span,
-		fmt.Sprintf("%s appears %d times across %d lines, %s",
-			runeinfo.Label(c), len(s.offsets), len(s.lines), perLine),
-		why).
-		WithDetail(finding.NewTable("distribution", []finding.KV{
-			{Key: "character", Value: runeinfo.Label(c)},
-			{Key: "occurrences", Value: fmt.Sprintf("%d", len(s.offsets))},
-			{Key: "lines", Value: fmt.Sprintf("%d", len(s.lines))},
-			{Key: "cadence", Value: perLine, Sensitive: true},
-			{Key: "offsets", Value: sampleOffsets(s.offsets)},
-		})).
+	rows := []finding.KV{
+		{Key: "character", Value: runeinfo.Label(alphabet[0])},
+		{Key: "occurrences", Value: fmt.Sprintf("%d", len(s.offsets))},
+		{Key: "lines", Value: fmt.Sprintf("%d", len(s.lines))},
+		{Key: "cadence", Value: cadence(s), Sensitive: true},
+		{Key: "offsets", Value: sampleOffsets(s.offsets)},
+	}
+	if len(alphabet) > 1 {
+		rows[0] = finding.KV{Key: "alphabet", Value: alphabetBreakdown(alphabet, s.runes), Sensitive: true}
+	}
+
+	return finding.New(d.Name(), KindFingerprint, finding.Fingerprint, sev, span, label, why).
+		WithDetail(finding.NewTable("distribution", rows)).
 		Irremovable("Not removable as a pattern: each character in it is reported separately and can be removed there, which is also the only way to be sure of what was taken out."), true
+}
+
+// describe picks the severity and the words, which vary along one axis: whether
+// the spread is one character repeated or several rotated.
+//
+// One exotic space repeated is typography as often as it is a mark — French
+// spacing puts a narrow no-break space before half the punctuation in the
+// language — so that half explains rather than accuses. Three of them rotating
+// through a document is not typography at all: a typesetter picks the space the
+// context calls for and picks the same one every time that context recurs.
+// Rotation is a choice of symbol from an alphabet, and an alphabet is for
+// spelling something.
+func (d Fingerprint) describe(class runeinfo.Class, s *spread, alphabet []rune) (finding.Severity, string, string) {
+	n, lines := len(s.offsets), len(s.lines)
+
+	if len(alphabet) == 1 {
+		c := alphabet[0]
+		label := fmt.Sprintf("%s appears %d times across %d lines, %s",
+			runeinfo.Label(c), n, lines, cadence(s))
+		if class == runeinfo.ExoticSpace {
+			return finding.Concern, label,
+				"A space that is not an ordinary space, used repeatedly through the document. " +
+					"Typesetting does this on purpose, and so does fingerprinting: a particular " +
+					"pattern of unusual spaces identifies which copy of a document a leak came from, " +
+					"survives reformatting, and is invisible to the reader either way."
+		}
+		return finding.Alarm, label,
+			"A character that renders as nothing, repeated across the document at a cadence " +
+				"no editor produces. Individually each one is deniable and this tool reports each one " +
+				"as a notice; together they are a pattern, and a pattern of invisible characters " +
+				"through a document is how a copy is marked so that a leak can be traced to whoever " +
+				"received it."
+	}
+
+	kinds := make([]string, 0, len(alphabet))
+	for _, c := range alphabet {
+		kinds = append(kinds, fmt.Sprintf("U+%04X", c))
+	}
+	noun := "invisible character"
+	if class != runeinfo.Normal {
+		noun = class.Noun()
+	}
+	label := fmt.Sprintf("%d kinds of %s (%s) appear %d times across %d lines, %s",
+		len(alphabet), noun, strings.Join(kinds, ", "), n, lines, cadence(s))
+
+	return finding.Alarm, label,
+		"Several different characters that render as nothing or as an ordinary space, " +
+			"rotating through the document at a steady cadence. A single repeated one is " +
+			"deniable and a word processor will produce it; a rotation is not, because " +
+			"choosing between interchangeable invisible characters position by position is " +
+			"how a value gets spelled out. This is the shape of a per-recipient mark, and " +
+			"varying the character is what makes it survive a reader who knows to look for " +
+			"one of them."
+}
+
+func cadence(s *spread) string {
+	if densest := maxPerLine(s.lines); densest > 1 {
+		return fmt.Sprintf("up to %d per line", densest)
+	}
+	return "about one per line"
+}
+
+func alphabetBreakdown(alphabet []rune, counts map[rune]int) string {
+	parts := make([]string, 0, len(alphabet))
+	for _, c := range alphabet {
+		parts = append(parts, fmt.Sprintf("%s ×%d", runeinfo.Label(c), counts[c]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // doingItsJob reports whether an invisible character at this position is doing
@@ -229,10 +351,10 @@ func sampleOffsets(offsets []int) string {
 	return strings.Join(parts, ", ")
 }
 
-func sortedRunes(m map[rune]*spread) []rune {
-	out := make([]rune, 0, len(m))
-	for r := range m {
-		out = append(out, r)
+func sortedClasses(m map[runeinfo.Class]*spread) []runeinfo.Class {
+	out := make([]runeinfo.Class, 0, len(m))
+	for c := range m {
+		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
